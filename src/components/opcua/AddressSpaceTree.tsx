@@ -1,10 +1,11 @@
-import React, { useEffect, useCallback } from "react";
+import React, { useEffect, useCallback, useState } from "react";
 import { clsx } from "clsx";
 import { useBrowserStore } from "@/stores/browserStore";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
 import { Panel, Spinner, EmptyState, Button } from "@/components/ui";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/ContextMenu";
+import { MonitorDialog } from "@/components/opcua/MonitorDialog";
 import { toast } from "@/stores/notificationStore";
 import {
   ChevronRight,
@@ -44,11 +45,13 @@ interface TreeNodeProps {
   onContextMenu: (e: React.MouseEvent, node: BrowseNode) => void;
   selectedNodeId: string | null;
   searchQuery: string;
+  monitoredNodeIds: Set<string>;
 }
 
 const TreeNode: React.FC<TreeNodeProps> = React.memo(
-  ({ item, depth, onExpand, onCollapse, onSelect, onContextMenu, selectedNodeId, searchQuery }) => {
+  ({ item, depth, onExpand, onCollapse, onSelect, onContextMenu, selectedNodeId, searchQuery, monitoredNodeIds }) => {
     const { node, expanded, loading, children } = item;
+    const isMonitored = monitoredNodeIds.has(node.node_id);
 
     const matchesSearch =
       !searchQuery ||
@@ -113,6 +116,11 @@ const TreeNode: React.FC<TreeNodeProps> = React.memo(
             {node.display_name || node.browse_name}
           </span>
 
+          {/* Monitored indicator */}
+          {isMonitored && (
+            <Eye size={10} className="flex-shrink-0 text-iot-cyan opacity-70" />
+          )}
+
           {/* Node ID tooltip on hover */}
           <span className="hidden group-hover:inline-block ml-auto text-2xs font-mono text-iot-text-disabled truncate max-w-[120px]">
             {node.node_id}
@@ -133,6 +141,7 @@ const TreeNode: React.FC<TreeNodeProps> = React.memo(
                 onContextMenu={onContextMenu}
                 selectedNodeId={selectedNodeId}
                 searchQuery={searchQuery}
+                monitoredNodeIds={monitoredNodeIds}
               />
             ))}
           </div>
@@ -193,10 +202,17 @@ export const AddressSpaceTree: React.FC = () => {
     selectNode,
     setSearchQuery,
   } = useBrowserStore();
-  const { subscriptions, activeSubscriptionId, addMonitoredItem, createSubscription, startPolling } =
+  const { subscriptions, getAllMonitoredNodeIds } =
     useSubscriptionStore();
 
   const { menuPosition, menuData, showMenu, closeMenu } = useContextMenu();
+
+  // Monitor dialog state
+  const [monitorDialogOpen, setMonitorDialogOpen] = useState(false);
+  const [monitorTarget, setMonitorTarget] = useState<{ nodeId: string; displayName: string } | null>(null);
+
+  // Compute monitored node IDs for tree indicators
+  const monitoredNodeIds = React.useMemo(() => getAllMonitoredNodeIds(), [subscriptions]);
 
   useEffect(() => {
     if (activeConnectionId && tree.length === 0) {
@@ -251,23 +267,8 @@ export const AddressSpaceTree: React.FC = () => {
           }
           break;
         case "monitor":
-          try {
-            let subId = activeSubscriptionId;
-            if (!subId || subscriptions.length === 0) {
-              subId = await createSubscription(activeConnectionId);
-            }
-            await addMonitoredItem(activeConnectionId, subId, {
-              node_id: node.node_id,
-              display_name: node.display_name,
-              sampling_interval: 500,
-              queue_size: 10,
-              discard_oldest: true,
-            });
-            startPolling(activeConnectionId, subId);
-            toast.success("Monitoring", `${node.display_name}`);
-          } catch (e) {
-            toast.error("Monitor failed", String(e));
-          }
+          setMonitorTarget({ nodeId: node.node_id, displayName: node.display_name });
+          setMonitorDialogOpen(true);
           break;
         case "browse":
           handleExpand(node.node_id);
@@ -283,7 +284,7 @@ export const AddressSpaceTree: React.FC = () => {
           break;
       }
     },
-    [menuData, activeConnectionId, activeSubscriptionId, subscriptions, createSubscription, addMonitoredItem, startPolling, handleExpand, handleSelect]
+    [menuData, activeConnectionId, handleExpand, handleSelect]
   );
 
   const contextNode = menuData as BrowseNode | null;
@@ -355,6 +356,7 @@ export const AddressSpaceTree: React.FC = () => {
                 onContextMenu={handleContextMenu}
                 selectedNodeId={selectedNodeId}
                 searchQuery={searchQuery}
+                monitoredNodeIds={monitoredNodeIds}
               />
             ))}
           </div>
@@ -368,6 +370,19 @@ export const AddressSpaceTree: React.FC = () => {
         onSelect={handleContextMenuAction}
         onClose={closeMenu}
       />
+
+      {/* Monitor dialog */}
+      {monitorTarget && (
+        <MonitorDialog
+          open={monitorDialogOpen}
+          onClose={() => {
+            setMonitorDialogOpen(false);
+            setMonitorTarget(null);
+          }}
+          nodeId={monitorTarget.nodeId}
+          displayName={monitorTarget.displayName}
+        />
+      )}
     </Panel>
   );
 };

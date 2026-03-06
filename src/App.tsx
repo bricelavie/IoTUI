@@ -57,11 +57,11 @@ function MainContent() {
       return <NodeAttributePanel />;
     case "subscriptions":
       return (
-        <div className="flex flex-col h-full">
-          <div className="flex-shrink-0 border-b border-iot-border">
+        <div className="flex h-full">
+          <div className="w-72 border-r border-iot-border flex-shrink-0">
             <SubscriptionManager />
           </div>
-          <div className="flex-1 min-h-0">
+          <div className="flex-1 min-w-0">
             <MonitoredItemsTable />
           </div>
         </div>

@@ -2,6 +2,7 @@ import React, { useMemo, useState, useCallback } from "react";
 import { clsx } from "clsx";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
+import { useAppStore } from "@/stores/appStore";
 import { Panel, Badge, EmptyState, Button } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ui/Modal";
 import { toast } from "@/stores/notificationStore";
@@ -15,6 +16,8 @@ import {
   ChevronRight,
   ArrowUp,
   ArrowDown,
+  FolderTree,
+  Eye,
 } from "lucide-react";
 import { Sparkline } from "@/components/charts/Sparkline";
 import { RealtimeChart } from "@/components/charts/RealtimeChart";
@@ -49,6 +52,11 @@ export const MonitoredItemsTable: React.FC = () => {
 
   const activeSub = subscriptions.find((s) => s.id === activeSubscriptionId);
   const monitoredItems = activeSub?.monitored_items ?? [];
+  const { setActiveView } = useAppStore();
+  const { subscriptionMeta, getSubscriptionName } = useSubscriptionStore();
+  const activeSubName = activeSubscriptionId
+    ? getSubscriptionName(activeSubscriptionId)
+    : "";
 
   const handleSort = useCallback(
     (field: SortField) => {
@@ -133,8 +141,8 @@ export const MonitoredItemsTable: React.FC = () => {
       <Panel title="Monitored Items">
         <EmptyState
           icon={<Activity size={24} />}
-          title="No Active Subscription"
-          description="Create a subscription to start monitoring values"
+          title="No Subscription Selected"
+          description="Select a subscription from the sidebar, or create a new one to start monitoring"
         />
       </Panel>
     );
@@ -142,11 +150,26 @@ export const MonitoredItemsTable: React.FC = () => {
 
   if (monitoredItems.length === 0) {
     return (
-      <Panel title="Monitored Items">
+      <Panel
+        title="Monitored Items"
+        headerRight={
+          <Badge variant="default">{activeSubName}</Badge>
+        }
+      >
         <EmptyState
-          icon={<Activity size={24} />}
+          icon={<Eye size={24} />}
           title="No Monitored Items"
-          description='Browse the address space and click "Monitor" on variable nodes'
+          description={`"${activeSubName}" has no monitored variables yet. Browse the address space to find variables and add them.`}
+          action={
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => setActiveView("browse")}
+            >
+              <FolderTree size={12} />
+              Browse Address Space
+            </Button>
+          }
         />
       </Panel>
     );
@@ -158,6 +181,7 @@ export const MonitoredItemsTable: React.FC = () => {
       noPadding
       headerRight={
         <div className="flex items-center gap-2">
+          <Badge variant="default">{activeSubName}</Badge>
           {isPolling && (
             <span className="flex items-center gap-1 text-2xs text-iot-cyan">
               <span className="w-1.5 h-1.5 rounded-full bg-iot-cyan animate-pulse-slow" />

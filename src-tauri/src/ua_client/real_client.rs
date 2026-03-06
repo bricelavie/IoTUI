@@ -6,7 +6,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use log::{info, warn};
+use log::{debug, info};
 use parking_lot::Mutex as SyncMutex;
 
 use opcua::client::{
@@ -29,8 +29,10 @@ pub struct RealOpcUaConnection {
     /// Subscription data change buffers: subscription_id -> Vec<DataChangeEvent>
     /// Filled by callbacks, drained by poll_subscription
     data_buffers: Arc<SyncMutex<HashMap<u32, Vec<DataChangeEvent>>>>,
-    /// Mapping of our internal monitored_item_id -> (node_id, display_name) for each subscription
-    monitored_items: HashMap<u32, Vec<(u32, String, String)>>,
+    /// Mapping of subscription_id -> Vec<(monitored_item_id, client_handle, node_id, display_name)>
+    monitored_items: HashMap<u32, Vec<(u32, u32, String, String)>>,
+    /// Mapping of subscription_id -> publishing_interval (f64 ms)
+    subscription_intervals: HashMap<u32, f64>,
 }
 
 impl RealOpcUaConnection {
@@ -130,6 +132,7 @@ impl RealOpcUaConnection {
             event_loop_handle: handle,
             data_buffers: Arc::new(SyncMutex::new(HashMap::new())),
             monitored_items: HashMap::new(),
+            subscription_intervals: HashMap::new(),
         })
     }
 
@@ -581,13 +584,15 @@ impl RealOpcUaConnection {
                     let server_ts = dv.server_timestamp.as_ref().map(|ts| ts.to_string());
                     let source_ts = dv.source_timestamp.as_ref().map(|ts| ts.to_string());
 
-                    // We need the subscription_id from the outer context.
-                    // Since we don't have it here yet (chicken-and-egg), we'll
-                    // store events with sub_id=0 and fix them in poll_subscription.
-                    // Actually, the item has client_handle which maps to monitored_item_id.
+                    let client_handle = item.client_handle();
+                    debug!(
+                        "DataChangeCallback: client_handle={}, node_id={}, value={}",
+                        client_handle, node_id_str, value_str
+                    );
+
                     let event = DataChangeEvent {
                         subscription_id: 0, // Will be set during poll
-                        monitored_item_id: item.client_handle(),
+                        monitored_item_id: client_handle,
                         node_id: node_id_str,
                         display_name,
                         value: value_str,
@@ -599,7 +604,6 @@ impl RealOpcUaConnection {
 
                     // Store in buffer for all subscriptions (we'll filter by item later)
                     let mut bufs = buffers.lock();
-                    // Add to a "global" buffer keyed by 0; will be dispatched in poll
                     bufs.entry(0).or_insert_with(Vec::new).push(event);
                 }),
             )
@@ -614,6 +618,8 @@ impl RealOpcUaConnection {
         self.monitored_items
             .entry(subscription_id)
             .or_insert_with(Vec::new);
+        self.subscription_intervals
+            .insert(subscription_id, request.publishing_interval);
 
         Ok(CreateSubscriptionResult {
             subscription_id,
@@ -631,6 +637,7 @@ impl RealOpcUaConnection {
             .map_err(|e| format!("Delete subscription failed: {e}"))?;
         self.data_buffers.lock().remove(&subscription_id);
         self.monitored_items.remove(&subscription_id);
+        self.subscription_intervals.remove(&subscription_id);
         Ok(())
     }
 
@@ -653,6 +660,10 @@ impl RealOpcUaConnection {
             })
             .collect();
 
+        // NOTE: Do NOT capture client_handles before sending. The SDK's
+        // create_monitored_items() replaces client_handle == 0 with auto-incremented
+        // values internally. We must extract the REAL client_handle from the response.
+
         let results = self
             .session
             .create_monitored_items(
@@ -671,6 +682,10 @@ impl RealOpcUaConnection {
 
         for (i, result) in results.iter().enumerate() {
             let item_id = result.result.monitored_item_id;
+            // Extract the REAL client_handle from the SDK response.
+            // This is the handle the SDK actually sent to the server and that
+            // the DataChangeCallback will receive via item.client_handle().
+            let client_handle = result.requested_parameters.client_handle;
             let node_id = items
                 .get(i)
                 .map(|it| it.node_id.clone())
@@ -679,7 +694,11 @@ impl RealOpcUaConnection {
                 .get(i)
                 .and_then(|it| it.display_name.clone())
                 .unwrap_or_else(|| node_id.clone());
-            monitored_list.push((item_id, node_id, display_name));
+            info!(
+                "Monitored item created: item_id={}, client_handle={}, node_id={}, display_name={}",
+                item_id, client_handle, node_id, display_name
+            );
+            monitored_list.push((item_id, client_handle, node_id, display_name));
             ids.push(item_id);
         }
 
@@ -698,7 +717,7 @@ impl RealOpcUaConnection {
             .map_err(|e| format!("Remove monitored items failed: {e}"))?;
 
         if let Some(items) = self.monitored_items.get_mut(&subscription_id) {
-            items.retain(|(id, _, _)| !item_ids.contains(id));
+            items.retain(|(id, _, _, _)| !item_ids.contains(id));
         }
         Ok(())
     }
@@ -708,26 +727,35 @@ impl RealOpcUaConnection {
     pub fn poll_subscription(&self, subscription_id: u32) -> Result<Vec<DataChangeEvent>, String> {
         let mut bufs = self.data_buffers.lock();
 
-        // Get items for this subscription to know which node_ids belong to it
+        // Get items for this subscription to know which client_handles belong to it
         let sub_items = self
             .monitored_items
             .get(&subscription_id)
             .cloned()
             .unwrap_or_default();
-        let sub_item_ids: std::collections::HashSet<u32> =
-            sub_items.iter().map(|(id, _, _)| *id).collect();
+        // Build set of client_handles (what the callback uses as monitored_item_id)
+        let sub_client_handles: std::collections::HashSet<u32> =
+            sub_items.iter().map(|(_, ch, _, _)| *ch).collect();
 
         // Drain the global callback buffer (key=0) and filter for this subscription
         let mut events = Vec::new();
         if let Some(global_buf) = bufs.get_mut(&0) {
+            if !global_buf.is_empty() {
+                debug!(
+                    "poll_subscription({}): {} events in global buffer, looking for client_handles {:?}",
+                    subscription_id,
+                    global_buf.len(),
+                    sub_client_handles
+                );
+            }
             let mut remaining = Vec::new();
             for mut event in global_buf.drain(..) {
-                if sub_item_ids.contains(&event.monitored_item_id) {
+                if sub_client_handles.contains(&event.monitored_item_id) {
                     event.subscription_id = subscription_id;
                     // Enrich display_name from our stored mapping
-                    if let Some((_, _, display)) = sub_items
+                    if let Some((_, _, _, display)) = sub_items
                         .iter()
-                        .find(|(id, _, _)| *id == event.monitored_item_id)
+                        .find(|(_, ch, _, _)| *ch == event.monitored_item_id)
                     {
                         event.display_name = display.clone();
                     }
@@ -739,6 +767,14 @@ impl RealOpcUaConnection {
             *global_buf = remaining;
         }
 
+        if !events.is_empty() {
+            debug!(
+                "poll_subscription({}): returning {} events",
+                subscription_id,
+                events.len()
+            );
+        }
+
         Ok(events)
     }
 
@@ -746,18 +782,25 @@ impl RealOpcUaConnection {
     pub fn get_subscriptions(&self) -> Vec<SubscriptionInfo> {
         self.monitored_items
             .iter()
-            .map(|(sub_id, items)| SubscriptionInfo {
-                id: *sub_id,
-                publishing_interval: 1000.0, // Default; actual interval tracked by server
-                monitored_items: items
-                    .iter()
-                    .map(|(item_id, node_id, display_name)| MonitoredItemInfo {
-                        id: *item_id,
-                        node_id: node_id.clone(),
-                        display_name: display_name.clone(),
-                        sampling_interval: 1000.0,
-                    })
-                    .collect(),
+            .map(|(sub_id, items)| {
+                let publishing_interval = self
+                    .subscription_intervals
+                    .get(sub_id)
+                    .copied()
+                    .unwrap_or(1000.0);
+                SubscriptionInfo {
+                    id: *sub_id,
+                    publishing_interval,
+                    monitored_items: items
+                        .iter()
+                        .map(|(item_id, _, node_id, display_name)| MonitoredItemInfo {
+                            id: *item_id,
+                            node_id: node_id.clone(),
+                            display_name: display_name.clone(),
+                            sampling_interval: publishing_interval,
+                        })
+                        .collect(),
+                }
             })
             .collect()
     }

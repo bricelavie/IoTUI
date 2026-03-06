@@ -1,8 +1,9 @@
 import React, { useMemo, useRef, useState, useEffect } from "react";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
-import { Card, Badge, EmptyState } from "@/components/ui";
+import { useAppStore } from "@/stores/appStore";
+import { Card, Badge, Button, EmptyState } from "@/components/ui";
 import { RealtimeChart } from "@/components/charts/RealtimeChart";
-import { LayoutDashboard } from "lucide-react";
+import { LayoutDashboard, FolderTree } from "lucide-react";
 import type { MonitoredValue } from "@/types/opcua";
 
 function computeStats(history: { timestamp: number; value: number }[]) {
@@ -94,6 +95,7 @@ const DashboardTile: React.FC<{ value: MonitoredValue }> = ({ value }) => {
 export const Dashboard: React.FC = () => {
   const { monitoredValues, isPolling, subscriptions, activeSubscriptionId } =
     useSubscriptionStore();
+  const { setActiveView } = useAppStore();
 
   const values = useMemo(
     () => Array.from(monitoredValues.values()),
@@ -108,7 +110,17 @@ export const Dashboard: React.FC = () => {
         <EmptyState
           icon={<LayoutDashboard size={32} />}
           title="No Monitored Values"
-          description="Add items to a subscription from the Browse view, then come back here"
+          description="Browse the address space to find variables, then click Monitor to start tracking them here"
+          action={
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => setActiveView("browse")}
+            >
+              <FolderTree size={12} />
+              Browse Address Space
+            </Button>
+          }
         />
       </div>
     );

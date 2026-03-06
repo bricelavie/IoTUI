@@ -9,6 +9,10 @@ import type {
 import * as opcua from "@/services/opcua";
 import { toast } from "@/stores/notificationStore";
 
+interface SubscriptionMeta {
+  name: string;
+}
+
 interface SubscriptionStore {
   // State
   subscriptions: SubscriptionInfo[];
@@ -16,11 +20,14 @@ interface SubscriptionStore {
   monitoredValues: Map<string, MonitoredValue>;
   isPolling: boolean;
   pollIntervalId: ReturnType<typeof setInterval> | null;
+  subscriptionMeta: Map<number, SubscriptionMeta>;
+  nextSubNumber: number;
 
   // Actions
   createSubscription: (
     connectionId: string,
-    request?: Partial<CreateSubscriptionRequest>
+    request?: Partial<CreateSubscriptionRequest>,
+    name?: string
   ) => Promise<number>;
   deleteSubscription: (connectionId: string, subId: number) => Promise<void>;
   addMonitoredItem: (
@@ -37,6 +44,10 @@ interface SubscriptionStore {
   startPolling: (connectionId: string, subscriptionId: number) => void;
   stopPolling: () => void;
   refreshSubscriptions: (connectionId: string) => Promise<void>;
+  renameSubscription: (subId: number, name: string) => void;
+  getSubscriptionName: (subId: number) => string;
+  getAllMonitoredNodeIds: () => Set<string>;
+  getSubscriptionsForNode: (nodeId: string) => { subId: number; name: string; itemId: number }[];
   clearAll: () => void;
 }
 
@@ -48,8 +59,11 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
   monitoredValues: new Map(),
   isPolling: false,
   pollIntervalId: null,
+  subscriptionMeta: new Map(),
+  nextSubNumber: 1,
 
-  createSubscription: async (connectionId, request) => {
+  createSubscription: async (connectionId, request, name) => {
+    const { nextSubNumber, subscriptionMeta } = get();
     const defaults: CreateSubscriptionRequest = {
       publishing_interval: 500,
       lifetime_count: 60,
@@ -62,27 +76,36 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
 
     const result = await opcua.createSubscription(connectionId, defaults);
     const subs = await opcua.getSubscriptions(connectionId);
+    const newMeta = new Map(subscriptionMeta);
+    const subName = name || `Subscription ${nextSubNumber}`;
+    newMeta.set(result.subscription_id, { name: subName });
     set({
       subscriptions: subs,
       activeSubscriptionId: result.subscription_id,
+      subscriptionMeta: newMeta,
+      nextSubNumber: nextSubNumber + 1,
     });
-    toast.success("Subscription created", `#${result.subscription_id} (${result.revised_publishing_interval}ms)`);
+    toast.success("Subscription created", `${subName} (${result.revised_publishing_interval}ms)`);
     return result.subscription_id;
   },
 
   deleteSubscription: async (connectionId, subId) => {
-    const { stopPolling, activeSubscriptionId } = get();
+    const { stopPolling, activeSubscriptionId, subscriptionMeta } = get();
+    const name = subscriptionMeta.get(subId)?.name || `#${subId}`;
     if (activeSubscriptionId === subId) {
       stopPolling();
     }
     await opcua.deleteSubscription(connectionId, subId);
     const subs = await opcua.getSubscriptions(connectionId);
+    const newMeta = new Map(subscriptionMeta);
+    newMeta.delete(subId);
     set({
       subscriptions: subs,
       activeSubscriptionId:
         activeSubscriptionId === subId ? null : activeSubscriptionId,
+      subscriptionMeta: newMeta,
     });
-    toast.info("Subscription deleted", `#${subId}`);
+    toast.info("Subscription deleted", name);
   },
 
   addMonitoredItem: async (connectionId, subscriptionId, item) => {
@@ -170,6 +193,42 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
     set({ subscriptions: subs });
   },
 
+  renameSubscription: (subId, name) => {
+    const newMeta = new Map(get().subscriptionMeta);
+    const existing = newMeta.get(subId) || { name: `#${subId}` };
+    newMeta.set(subId, { ...existing, name });
+    set({ subscriptionMeta: newMeta });
+  },
+
+  getSubscriptionName: (subId) => {
+    return get().subscriptionMeta.get(subId)?.name || `Subscription #${subId}`;
+  },
+
+  getAllMonitoredNodeIds: () => {
+    const { subscriptions } = get();
+    const nodeIds = new Set<string>();
+    for (const sub of subscriptions) {
+      for (const item of sub.monitored_items) {
+        nodeIds.add(item.node_id);
+      }
+    }
+    return nodeIds;
+  },
+
+  getSubscriptionsForNode: (nodeId) => {
+    const { subscriptions, subscriptionMeta } = get();
+    const results: { subId: number; name: string; itemId: number }[] = [];
+    for (const sub of subscriptions) {
+      for (const item of sub.monitored_items) {
+        if (item.node_id === nodeId) {
+          const name = subscriptionMeta.get(sub.id)?.name || `Subscription #${sub.id}`;
+          results.push({ subId: sub.id, name, itemId: item.id });
+        }
+      }
+    }
+    return results;
+  },
+
   clearAll: () => {
     const { stopPolling } = get();
     stopPolling();
@@ -177,6 +236,8 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
       subscriptions: [],
       activeSubscriptionId: null,
       monitoredValues: new Map(),
+      subscriptionMeta: new Map(),
+      nextSubNumber: 1,
     });
   },
 }));

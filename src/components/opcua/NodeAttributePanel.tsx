@@ -1,8 +1,10 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useMemo } from "react";
 import { useBrowserStore } from "@/stores/browserStore";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
+import { useAppStore } from "@/stores/appStore";
 import { Panel, Badge, Spinner, EmptyState, Button, Tabs, Input } from "@/components/ui";
+import { MonitorDialog } from "@/components/opcua/MonitorDialog";
 import { toast } from "@/stores/notificationStore";
 import * as opcua from "@/services/opcua";
 import {
@@ -24,13 +26,12 @@ export const NodeAttributePanel: React.FC = () => {
   const { activeConnectionId } = useConnectionStore();
   const {
     subscriptions,
-    activeSubscriptionId,
-    addMonitoredItem,
-    createSubscription,
-    startPolling,
+    getSubscriptionsForNode,
   } = useSubscriptionStore();
+  const { setActiveView } = useAppStore();
 
   const [activeTab, setActiveTab] = useState("attributes");
+  const [monitorDialogOpen, setMonitorDialogOpen] = useState(false);
 
   // Auto-refresh state
   const [autoRefresh, setAutoRefresh] = useState(false);
@@ -62,6 +63,16 @@ export const NodeAttributePanel: React.FC = () => {
   useEffect(() => {
     setIsEditing(false);
   }, [selectedNodeId]);
+
+  // Check if this node is already being monitored (must be before early returns)
+  const monitoringInfo = useMemo(
+    () =>
+      selectedNodeDetails?.node_class === "Variable" && selectedNodeDetails?.node_id
+        ? getSubscriptionsForNode(selectedNodeDetails.node_id)
+        : [],
+    [selectedNodeDetails?.node_id, selectedNodeDetails?.node_class, subscriptions]
+  );
+  const isMonitored = monitoringInfo.length > 0;
 
   if (!selectedNodeId) {
     return (
@@ -96,25 +107,8 @@ export const NodeAttributePanel: React.FC = () => {
   const details = selectedNodeDetails;
   const isWritable = (details.access_level ?? 0) & 0x02; // CurrentWrite bit
 
-  const handleMonitor = async () => {
-    if (!activeConnectionId) return;
-    try {
-      let subId = activeSubscriptionId;
-      if (!subId || subscriptions.length === 0) {
-        subId = await createSubscription(activeConnectionId);
-      }
-      await addMonitoredItem(activeConnectionId, subId, {
-        node_id: details.node_id,
-        display_name: details.display_name,
-        sampling_interval: 500,
-        queue_size: 10,
-        discard_oldest: true,
-      });
-      startPolling(activeConnectionId, subId);
-      toast.success("Monitoring", details.display_name);
-    } catch (e) {
-      toast.error("Monitor failed", String(e));
-    }
+  const handleMonitor = () => {
+    setMonitorDialogOpen(true);
   };
 
   const handleCopyNodeId = async () => {
@@ -196,9 +190,13 @@ export const NodeAttributePanel: React.FC = () => {
             <RefreshCw size={11} />
           </Button>
           {details.node_class === "Variable" && (
-            <Button variant="primary" size="xs" onClick={handleMonitor}>
-              <Eye size={11} />
-              Monitor
+            <Button
+              variant={isMonitored ? "accent" : "primary"}
+              size="xs"
+              onClick={handleMonitor}
+            >
+              {isMonitored ? <Eye size={11} /> : <Eye size={11} />}
+              {isMonitored ? "Monitoring" : "Monitor"}
             </Button>
           )}
         </div>
@@ -304,6 +302,33 @@ export const NodeAttributePanel: React.FC = () => {
         )}
       </div>
 
+      {/* Monitored state info bar */}
+      {isMonitored && (
+        <div className="px-3 py-2 border-b border-iot-border bg-iot-amber/5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5 text-2xs text-iot-amber">
+              <Eye size={11} />
+              <span className="font-medium">
+                Monitored in: {monitoringInfo.map((m) => m.name).join(", ")}
+              </span>
+            </div>
+            <button
+              onClick={() => {
+                const firstSub = monitoringInfo[0];
+                if (firstSub) {
+                  useSubscriptionStore.getState().activeSubscriptionId !== firstSub.subId &&
+                    useSubscriptionStore.setState({ activeSubscriptionId: firstSub.subId });
+                  setActiveView("subscriptions");
+                }
+              }}
+              className="text-2xs text-iot-cyan hover:text-iot-cyan/80 transition-colors font-medium"
+            >
+              View in Monitor
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Tabs */}
       <Tabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
 
@@ -400,6 +425,16 @@ export const NodeAttributePanel: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Monitor dialog */}
+      {details.node_class === "Variable" && (
+        <MonitorDialog
+          open={monitorDialogOpen}
+          onClose={() => setMonitorDialogOpen(false)}
+          nodeId={details.node_id}
+          displayName={details.display_name}
+        />
+      )}
     </Panel>
   );
 };
