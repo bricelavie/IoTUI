@@ -1,0 +1,257 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+    background-color: #080b12;
+    color: #f0f4f8;
+    font-family: "Inter", system-ui, sans-serif;
+  }
+
+  /* Custom scrollbar - industrial theme */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #0f1420;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #2a3650;
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3b4a6b;
+  }
+
+  /* Prevent text selection on UI elements */
+  .no-select {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  /* Industrial grid background pattern */
+  .bg-industrial-grid {
+    background-size: 20px 20px;
+    background-image: linear-gradient(
+        rgba(30, 42, 58, 0.15) 1px,
+        transparent 1px
+      ),
+      linear-gradient(90deg, rgba(30, 42, 58, 0.15) 1px, transparent 1px);
+  }
+}
+
+@layer components {
+  /* Card component base */
+  .iot-card {
+    @apply bg-iot-bg-surface border border-iot-border rounded-lg;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
+  }
+
+  .iot-card-interactive {
+    @apply iot-card transition-all duration-200;
+  }
+
+  .iot-card-interactive:hover {
+    @apply border-iot-border-light;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4), 0 2px 4px rgba(0, 0, 0, 0.3);
+  }
+
+  /* Glow accents */
+  .glow-cyan {
+    box-shadow: 0 0 20px rgba(0, 212, 170, 0.1),
+      inset 0 0 20px rgba(0, 212, 170, 0.03);
+    border-color: rgba(0, 212, 170, 0.3);
+  }
+
+  .glow-amber {
+    box-shadow: 0 0 20px rgba(245, 158, 11, 0.1),
+      inset 0 0 20px rgba(245, 158, 11, 0.03);
+    border-color: rgba(245, 158, 11, 0.3);
+  }
+
+  .glow-red {
+    box-shadow: 0 0 20px rgba(239, 68, 68, 0.1),
+      inset 0 0 20px rgba(239, 68, 68, 0.03);
+    border-color: rgba(239, 68, 68, 0.3);
+  }
+
+  /* Status indicator dot */
+  .status-dot {
+    @apply w-2 h-2 rounded-full;
+  }
+
+  .status-dot-connected {
+    @apply status-dot bg-iot-cyan;
+    box-shadow: 0 0 6px rgba(0, 212, 170, 0.6);
+  }
+
+  .status-dot-warning {
+    @apply status-dot bg-iot-amber animate-status-blink;
+    box-shadow: 0 0 6px rgba(245, 158, 11, 0.6);
+  }
+
+  .status-dot-error {
+    @apply status-dot bg-iot-red animate-status-blink;
+    box-shadow: 0 0 6px rgba(239, 68, 68, 0.6);
+  }
+
+  .status-dot-disconnected {
+    @apply status-dot bg-iot-text-disabled;
+  }
+
+  /* Industrial separator */
+  .iot-separator {
+    @apply border-t border-iot-border;
+  }
+
+  /* Panel header */
+  .panel-header {
+    @apply flex items-center justify-between px-4 py-2.5 border-b border-iot-border;
+  }
+
+  .panel-title {
+    @apply text-xs font-semibold uppercase tracking-wider text-iot-text-secondary;
+  }
+
+  /* Monospace data display */
+  .data-value {
+    @apply font-mono text-sm text-iot-text-primary;
+  }
+
+  .data-label {
+    @apply text-xs text-iot-text-muted;
+  }
+
+  .data-unit {
+    @apply text-2xs text-iot-text-disabled ml-1;
+  }
+
+  /* Tree node */
+  .tree-node {
+    @apply flex items-center gap-1.5 px-2 py-1 rounded text-sm cursor-pointer transition-colors duration-100;
+  }
+
+  .tree-node:hover {
+    @apply bg-iot-bg-hover;
+  }
+
+  .tree-node.active {
+    @apply bg-iot-blue/10 text-iot-blue;
+  }
+
+  /* Tab styles */
+  .iot-tab {
+    @apply px-3 py-1.5 text-xs font-medium text-iot-text-muted transition-colors duration-150 border-b-2 border-transparent cursor-pointer;
+  }
+
+  .iot-tab:hover {
+    @apply text-iot-text-secondary;
+  }
+
+  .iot-tab.active {
+    @apply text-iot-cyan border-iot-cyan;
+  }
+}
+
+@layer components {
+  /* Toast animations */
+  .toast-enter {
+    animation: toast-slide-in 0.2s ease-out forwards;
+  }
+
+  .toast-exit {
+    animation: toast-slide-out 0.2s ease-in forwards;
+  }
+
+  /* Modal backdrop */
+  .modal-backdrop {
+    @apply fixed inset-0 z-[9000] flex items-center justify-center;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    animation: modal-fade-in 0.15s ease-out;
+  }
+
+  .modal-panel {
+    animation: modal-scale-in 0.15s ease-out;
+  }
+
+  /* Context menu */
+  .context-menu {
+    animation: context-menu-in 0.1s ease-out;
+  }
+}
+
+@layer utilities {
+  .text-gradient-cyan {
+    @apply bg-gradient-to-r from-iot-cyan to-iot-blue bg-clip-text text-transparent;
+  }
+}
+
+@keyframes toast-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(100%) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes toast-slide-out {
+  from {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(100%) scale(0.95);
+  }
+}
+
+@keyframes modal-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modal-scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes context-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}

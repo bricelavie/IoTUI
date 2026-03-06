@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+dist-ssr/
+*.local
+
+# TypeScript build info
+tsconfig.tsbuildinfo
+
+# Tauri build outputs
+src-tauri/target/
+src-tauri/gen/
+
+# Tauri PKI / certificate store (auto-generated, contains private keys)
+src-tauri/pki/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor directories
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment files
+.env
+.env.local
+.env.*.local
