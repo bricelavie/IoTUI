@@ -3,6 +3,7 @@ import { clsx } from "clsx";
 import { useBrowserStore } from "@/stores/browserStore";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
+import { useAppStore } from "@/stores/appStore";
 import { Panel, Spinner, EmptyState, Button } from "@/components/ui";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/ContextMenu";
 import { MonitorDialog } from "@/components/opcua/MonitorDialog";
@@ -279,9 +280,21 @@ export const AddressSpaceTree: React.FC = () => {
         case "write":
           handleSelect(node.node_id);
           break;
-        case "call":
-          handleSelect(node.node_id);
+        case "call": {
+          // Infer parent object from method node ID (e.g. ns=2;s=Line1.Robot1.Reset -> ns=2;s=Line1.Robot1)
+          const parts = node.node_id.split(".");
+          let parentObjectId: string | undefined;
+          if (parts.length > 1) {
+            parts.pop();
+            parentObjectId = parts.join(".");
+          }
+          useAppStore.getState().setMethodTarget({
+            methodNodeId: node.node_id,
+            objectNodeId: parentObjectId,
+          });
+          useAppStore.getState().setActiveView("methods");
           break;
+        }
       }
     },
     [menuData, activeConnectionId, handleExpand, handleSelect]

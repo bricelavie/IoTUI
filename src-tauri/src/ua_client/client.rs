@@ -1,5 +1,4 @@
-//! Real OPC UA client implementation using the async-opcua crate.
-//! This module is only compiled when the `opcua-live` feature is enabled.
+//! OPC UA client implementation using the async-opcua crate.
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -10,20 +9,22 @@ use log::{debug, info};
 use parking_lot::Mutex as SyncMutex;
 
 use opcua::client::{
-    ClientBuilder, DataChangeCallback, IdentityToken, Session,
+    ClientBuilder, DataChangeCallback, EventCallback, IdentityToken, Session,
 };
 use opcua::crypto::SecurityPolicy;
 use opcua::types::{
-    AttributeId, BrowseDescription, BrowseDirection, BrowseResultMask, DataValue,
-    MessageSecurityMode, MonitoredItemCreateRequest as OpcMonitoredItemCreateRequest, NodeClassMask,
-    NodeId, ReadValueId, ReferenceTypeId, StatusCode, TimestampsToReturn, UserTokenPolicy, Variant,
-    WriteValue,
+    AttributeId, BrowseDescription, BrowseDirection, BrowseResultMask, ContentFilter, DataValue,
+    EventFilter, ExtensionObject, MessageSecurityMode,
+    MonitoredItemCreateRequest as OpcMonitoredItemCreateRequest, MonitoringMode,
+    MonitoringParameters, NodeClassMask, NodeId, ObjectId, ObjectTypeId, QualifiedName,
+    ReadValueId, ReferenceTypeId, SimpleAttributeOperand, StatusCode, TimestampsToReturn,
+    UserTokenPolicy, Variant, WriteValue,
 };
 
 use super::types::*;
 
-/// Holds state for a single real OPC UA connection
-pub struct RealOpcUaConnection {
+/// Holds state for a single OPC UA connection
+pub struct OpcUaConnection {
     session: Arc<Session>,
     event_loop_handle: tokio::task::JoinHandle<StatusCode>,
     /// Subscription data change buffers: subscription_id -> Vec<DataChangeEvent>
@@ -33,12 +34,14 @@ pub struct RealOpcUaConnection {
     monitored_items: HashMap<u32, Vec<(u32, u32, String, String)>>,
     /// Mapping of subscription_id -> publishing_interval (f64 ms)
     subscription_intervals: HashMap<u32, f64>,
+    /// Event buffer: filled by EventCallback, drained by poll_events
+    event_buffer: Arc<SyncMutex<Vec<EventData>>>,
 }
 
-impl RealOpcUaConnection {
-    /// Connect to a real OPC UA server
+impl OpcUaConnection {
+    /// Connect to an OPC UA server
     pub async fn connect(config: &ConnectionConfig) -> Result<Self, String> {
-        info!("Connecting to real OPC UA server: {}", config.endpoint_url);
+        info!("Connecting to OPC UA server: {}", config.endpoint_url);
 
         let mut client = ClientBuilder::new()
             .application_name("IoTUI")
@@ -127,13 +130,22 @@ impl RealOpcUaConnection {
             config.endpoint_url
         );
 
-        Ok(Self {
+        let conn = Self {
             session,
             event_loop_handle: handle,
             data_buffers: Arc::new(SyncMutex::new(HashMap::new())),
             monitored_items: HashMap::new(),
             subscription_intervals: HashMap::new(),
-        })
+            event_buffer: Arc::new(SyncMutex::new(Vec::new())),
+        };
+
+        // Auto-subscribe to events (best-effort; don't fail the connection if this fails)
+        match conn.subscribe_to_events().await {
+            Ok(()) => info!("Auto-subscribed to server events"),
+            Err(e) => log::warn!("Failed to auto-subscribe to events (server may not support events): {e}"),
+        }
+
+        Ok(conn)
     }
 
     /// Disconnect from the server
@@ -662,7 +674,7 @@ impl RealOpcUaConnection {
 
         // NOTE: Do NOT capture client_handles before sending. The SDK's
         // create_monitored_items() replaces client_handle == 0 with auto-incremented
-        // values internally. We must extract the REAL client_handle from the response.
+        // values internally. We must extract the actual client_handle from the response.
 
         let results = self
             .session
@@ -682,7 +694,7 @@ impl RealOpcUaConnection {
 
         for (i, result) in results.iter().enumerate() {
             let item_id = result.result.monitored_item_id;
-            // Extract the REAL client_handle from the SDK response.
+            // Extract the actual client_handle from the SDK response.
             // This is the handle the SDK actually sent to the server and that
             // the DataChangeCallback will receive via item.client_handle().
             let client_handle = result.requested_parameters.client_handle;
@@ -818,7 +830,7 @@ impl RealOpcUaConnection {
         let input_args: Vec<Variant> = request
             .input_arguments
             .iter()
-            .map(|arg| Variant::String(opcua::types::UAString::from(arg.as_str())))
+            .map(|arg| string_to_variant(&arg.value, &arg.data_type))
             .collect();
 
         let input_args_opt = if input_args.is_empty() {
@@ -844,6 +856,303 @@ impl RealOpcUaConnection {
             output_arguments: output_args,
         })
     }
+
+    /// Discover method argument metadata by browsing for InputArguments/OutputArguments properties
+    pub async fn get_method_info(
+        &self,
+        method_node_id: &str,
+    ) -> Result<MethodInfo, String> {
+        let node_id = NodeId::from_str(method_node_id)
+            .map_err(|e| format!("Invalid method node ID: {e}"))?;
+
+        // Read DisplayName and BrowseName of the method node itself
+        let attrs_to_read: Vec<ReadValueId> = [
+            AttributeId::BrowseName,
+            AttributeId::DisplayName,
+            AttributeId::Description,
+        ]
+        .iter()
+        .map(|attr| ReadValueId {
+            node_id: node_id.clone(),
+            attribute_id: *attr as u32,
+            ..Default::default()
+        })
+        .collect();
+
+        let attr_results = self
+            .session
+            .read(&attrs_to_read, TimestampsToReturn::Neither, 0.0)
+            .await
+            .map_err(|e| format!("Failed to read method attributes: {e}"))?;
+
+        let browse_name = attr_results
+            .first()
+            .and_then(|dv| dv.value.as_ref())
+            .map(|v| match v {
+                Variant::QualifiedName(qn) => qn.name.to_string(),
+                _ => variant_to_string(v),
+            })
+            .unwrap_or_default();
+
+        let display_name = attr_results
+            .get(1)
+            .and_then(|dv| dv.value.as_ref())
+            .map(variant_to_string)
+            .unwrap_or_default();
+
+        let description = attr_results
+            .get(2)
+            .and_then(|dv| dv.value.as_ref())
+            .map(variant_to_string)
+            .unwrap_or_default();
+
+        // Browse for HasProperty references to find InputArguments/OutputArguments
+        let browse_desc = BrowseDescription {
+            node_id: node_id.clone(),
+            browse_direction: BrowseDirection::Forward,
+            reference_type_id: NodeId::new(0, 46), // HasProperty
+            include_subtypes: true,
+            node_class_mask: NodeClassMask::all().bits(),
+            result_mask: BrowseResultMask::All as u32,
+        };
+
+        let results = self
+            .session
+            .browse(&[browse_desc], 0, None)
+            .await
+            .map_err(|e| format!("Browse method properties failed: {e}"))?;
+
+        let refs = results
+            .first()
+            .and_then(|r| r.references.as_ref())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut input_arguments = Vec::new();
+        let mut output_arguments = Vec::new();
+
+        for reference in &refs {
+            let prop_name = reference.browse_name.name.to_string();
+            let is_input = prop_name == "InputArguments";
+            let is_output = prop_name == "OutputArguments";
+            if !is_input && !is_output {
+                continue;
+            }
+
+            // Read the Value of this property node
+            let prop_node_id = reference.node_id.node_id.clone();
+            let read_req = vec![ReadValueId {
+                node_id: prop_node_id,
+                attribute_id: AttributeId::Value as u32,
+                ..Default::default()
+            }];
+
+            if let Ok(read_results) = self
+                .session
+                .read(&read_req, TimestampsToReturn::Neither, 0.0)
+                .await
+            {
+                if let Some(dv) = read_results.first() {
+                    let args = parse_argument_array(dv);
+                    if is_input {
+                        input_arguments = args;
+                    } else {
+                        output_arguments = args;
+                    }
+                }
+            }
+        }
+
+        Ok(MethodInfo {
+            node_id: method_node_id.to_string(),
+            browse_name,
+            display_name,
+            description,
+            input_arguments,
+            output_arguments,
+        })
+    }
+
+    /// Subscribe to OPC UA events on the Server object.
+    /// Creates a subscription with an EventCallback that monitors the Server node's EventNotifier attribute.
+    pub async fn subscribe_to_events(&self) -> Result<(), String> {
+        let event_buf = self.event_buffer.clone();
+
+        // Build select clauses for BaseEventType fields
+        let select_clauses = vec![
+            // [0] EventId — ByteString
+            SimpleAttributeOperand {
+                type_definition_id: ObjectTypeId::BaseEventType.into(),
+                browse_path: Some(vec![QualifiedName::new(0, "EventId")]),
+                attribute_id: AttributeId::Value as u32,
+                index_range: opcua::types::NumericRange::None,
+            },
+            // [1] EventType — NodeId
+            SimpleAttributeOperand {
+                type_definition_id: ObjectTypeId::BaseEventType.into(),
+                browse_path: Some(vec![QualifiedName::new(0, "EventType")]),
+                attribute_id: AttributeId::Value as u32,
+                index_range: opcua::types::NumericRange::None,
+            },
+            // [2] SourceNode — NodeId
+            SimpleAttributeOperand {
+                type_definition_id: ObjectTypeId::BaseEventType.into(),
+                browse_path: Some(vec![QualifiedName::new(0, "SourceNode")]),
+                attribute_id: AttributeId::Value as u32,
+                index_range: opcua::types::NumericRange::None,
+            },
+            // [3] SourceName — String
+            SimpleAttributeOperand {
+                type_definition_id: ObjectTypeId::BaseEventType.into(),
+                browse_path: Some(vec![QualifiedName::new(0, "SourceName")]),
+                attribute_id: AttributeId::Value as u32,
+                index_range: opcua::types::NumericRange::None,
+            },
+            // [4] Time — DateTime
+            SimpleAttributeOperand {
+                type_definition_id: ObjectTypeId::BaseEventType.into(),
+                browse_path: Some(vec![QualifiedName::new(0, "Time")]),
+                attribute_id: AttributeId::Value as u32,
+                index_range: opcua::types::NumericRange::None,
+            },
+            // [5] ReceiveTime — DateTime
+            SimpleAttributeOperand {
+                type_definition_id: ObjectTypeId::BaseEventType.into(),
+                browse_path: Some(vec![QualifiedName::new(0, "ReceiveTime")]),
+                attribute_id: AttributeId::Value as u32,
+                index_range: opcua::types::NumericRange::None,
+            },
+            // [6] Message — LocalizedText
+            SimpleAttributeOperand {
+                type_definition_id: ObjectTypeId::BaseEventType.into(),
+                browse_path: Some(vec![QualifiedName::new(0, "Message")]),
+                attribute_id: AttributeId::Value as u32,
+                index_range: opcua::types::NumericRange::None,
+            },
+            // [7] Severity — UInt16
+            SimpleAttributeOperand {
+                type_definition_id: ObjectTypeId::BaseEventType.into(),
+                browse_path: Some(vec![QualifiedName::new(0, "Severity")]),
+                attribute_id: AttributeId::Value as u32,
+                index_range: opcua::types::NumericRange::None,
+            },
+        ];
+
+        let event_filter = EventFilter {
+            select_clauses: Some(select_clauses),
+            where_clause: ContentFilter::default(),
+        };
+
+        // Create a subscription with EventCallback
+        let sub_id = self
+            .session
+            .create_subscription(
+                Duration::from_secs(1),
+                10,
+                30,
+                0,
+                0,
+                true,
+                EventCallback::new(move |event_fields, _item| {
+                    let fields = match event_fields {
+                        Some(f) => f,
+                        None => return,
+                    };
+
+                    // Extract fields by position (matching select_clauses order)
+                    let event_id = fields.get(0).map(|v| match v {
+                        Variant::ByteString(bs) => {
+                            // Convert ByteString to hex string
+                            bs.value
+                                .as_ref()
+                                .map(|bytes| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
+                                .unwrap_or_else(|| "unknown".to_string())
+                        }
+                        _ => variant_to_string(v),
+                    }).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+                    let event_type = fields.get(1).map(variant_to_string).unwrap_or_default();
+
+                    let source_node_id = fields.get(2).map(variant_to_string);
+
+                    let source_name = fields.get(3).map(variant_to_string).unwrap_or_else(|| "Unknown".to_string());
+
+                    let timestamp = fields.get(4).map(variant_to_string).unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+
+                    let receive_time = fields.get(5).map(variant_to_string).unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+
+                    let message = fields.get(6).map(variant_to_string).unwrap_or_default();
+
+                    let severity = fields.get(7).map(|v| match v {
+                        Variant::UInt16(n) => *n,
+                        Variant::UInt32(n) => *n as u16,
+                        Variant::Int32(n) => *n as u16,
+                        _ => 0u16,
+                    }).unwrap_or(0);
+
+                    let event = EventData {
+                        event_id,
+                        source_name,
+                        event_type,
+                        severity,
+                        message,
+                        timestamp,
+                        receive_time,
+                        source_node_id,
+                    };
+
+                    debug!("EventCallback: received event from source={}", event.source_name);
+                    event_buf.lock().push(event);
+                }),
+            )
+            .await
+            .map_err(|e| format!("Failed to create event subscription: {e}"))?;
+
+        info!("Created event subscription with id={}", sub_id);
+
+        // Create a monitored item on the Server object's EventNotifier attribute
+        let server_node_id: NodeId = ObjectId::Server.into();
+        let event_monitor_request = OpcMonitoredItemCreateRequest {
+            item_to_monitor: ReadValueId {
+                node_id: server_node_id,
+                attribute_id: AttributeId::EventNotifier as u32,
+                ..Default::default()
+            },
+            monitoring_mode: MonitoringMode::Reporting,
+            requested_parameters: MonitoringParameters {
+                client_handle: 0,
+                sampling_interval: 0.0,
+                filter: ExtensionObject::from_message(event_filter),
+                queue_size: 100,
+                discard_oldest: true,
+            },
+        };
+
+        let results = self
+            .session
+            .create_monitored_items(sub_id, TimestampsToReturn::Both, vec![event_monitor_request])
+            .await
+            .map_err(|e| format!("Failed to create event monitored item: {e}"))?;
+
+        if let Some(result) = results.first() {
+            if result.result.status_code.is_good() {
+                info!("Event monitored item created successfully: item_id={}", result.result.monitored_item_id);
+            } else {
+                log::warn!(
+                    "Event monitored item creation returned status: {}",
+                    result.result.status_code
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Drain buffered events received from the server via EventCallback
+    pub fn poll_events(&self) -> Vec<EventData> {
+        let mut buf = self.event_buffer.lock();
+        buf.drain(..).collect()
+    }
 }
 
 // ─── Helper functions ────────────────────────────────────────────
@@ -863,11 +1172,17 @@ fn variant_to_string(v: &Variant) -> String {
         Variant::UInt64(n) => n.to_string(),
         Variant::Float(n) => format!("{n:.2}"),
         Variant::Double(n) => format!("{n:.2}"),
-        Variant::String(s) => s.to_string(),
+        Variant::String(s) => {
+            let val = s.to_string();
+            if val == "[null]" { String::new() } else { val }
+        }
         Variant::DateTime(dt) => dt.to_string(),
         Variant::NodeId(id) => id.to_string(),
         Variant::StatusCode(sc) => format!("{sc}"),
-        Variant::LocalizedText(lt) => lt.text.to_string(),
+        Variant::LocalizedText(lt) => {
+            let s = lt.text.to_string();
+            if s == "[null]" { String::new() } else { s }
+        }
         Variant::QualifiedName(qn) => qn.to_string(),
         _ => format!("{v:?}"),
     }
@@ -971,4 +1286,44 @@ fn data_type_node_id_to_string(id: &opcua::types::NodeId) -> String {
         }
     }
     id.to_string()
+}
+
+/// Parse an OPC UA Argument array from a DataValue (used for InputArguments/OutputArguments properties)
+fn parse_argument_array(dv: &DataValue) -> Vec<MethodArgument> {
+    let value = match dv.value.as_ref() {
+        Some(v) => v,
+        None => return vec![],
+    };
+
+    // The value should be an Array of ExtensionObject, each containing an Argument
+    let ext_objects: Vec<&opcua::types::ExtensionObject> = match value {
+        Variant::Array(arr) => arr
+            .values
+            .iter()
+            .filter_map(|v| match v {
+                Variant::ExtensionObject(eo) => Some(eo),
+                _ => None,
+            })
+            .collect(),
+        Variant::ExtensionObject(eo) => vec![eo],
+        _ => return vec![],
+    };
+
+    ext_objects
+        .into_iter()
+        .filter_map(|eo| {
+            let arg = eo.inner_as::<opcua::types::argument::Argument>()?;
+            Some(MethodArgument {
+                name: {
+                    let s = arg.name.to_string();
+                    if s == "[null]" { String::new() } else { s }
+                },
+                data_type: data_type_node_id_to_string(&arg.data_type),
+                description: {
+                    let s = arg.description.text.to_string();
+                    if s == "[null]" { String::new() } else { s }
+                },
+            })
+        })
+        .collect()
 }

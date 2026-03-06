@@ -26,7 +26,7 @@ thiserror = "2"
 parking_lot = "0.12"
 rand = "0.8"
 
-# Real OPC UA client support
+# OPC UA client support
 async-opcua = { version = "0.18", features = ["client"] }
 
 [features]

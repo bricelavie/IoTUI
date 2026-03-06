@@ -855,6 +855,171 @@ impl OpcUaSimulator {
             })
             .collect()
     }
+
+    /// Get method argument metadata for simulator methods
+    pub fn get_method_info(&self, method_node_id: &str) -> Result<MethodInfo, String> {
+        match method_node_id {
+            "ns=2;s=Line1.Robot1.Reset" => Ok(MethodInfo {
+                node_id: method_node_id.to_string(),
+                browse_name: "2:Reset".to_string(),
+                display_name: "Reset".to_string(),
+                description: "Reset the robot arm to its home position and clear error state"
+                    .to_string(),
+                input_arguments: vec![],
+                output_arguments: vec![MethodArgument {
+                    name: "Result".to_string(),
+                    data_type: "String".to_string(),
+                    description: "Reset result message".to_string(),
+                }],
+            }),
+            "ns=2;s=Line1.Robot1.Calibrate" => Ok(MethodInfo {
+                node_id: method_node_id.to_string(),
+                browse_name: "2:Calibrate".to_string(),
+                display_name: "Calibrate".to_string(),
+                description: "Run calibration sequence on the robot arm".to_string(),
+                input_arguments: vec![MethodArgument {
+                    name: "Axis".to_string(),
+                    data_type: "String".to_string(),
+                    description: "Axis to calibrate (X, Y, Z, or All)".to_string(),
+                }],
+                output_arguments: vec![MethodArgument {
+                    name: "CalibrationOffset".to_string(),
+                    data_type: "Double".to_string(),
+                    description: "Measured calibration offset".to_string(),
+                }],
+            }),
+            "ns=2;s=Line1.Robot2.Reset" => Ok(MethodInfo {
+                node_id: method_node_id.to_string(),
+                browse_name: "2:Reset".to_string(),
+                display_name: "Reset".to_string(),
+                description: "Reset robot arm #2 to home position".to_string(),
+                input_arguments: vec![],
+                output_arguments: vec![MethodArgument {
+                    name: "Result".to_string(),
+                    data_type: "String".to_string(),
+                    description: "Reset result message".to_string(),
+                }],
+            }),
+            "ns=2;s=Line1.Conveyor.Start" => Ok(MethodInfo {
+                node_id: method_node_id.to_string(),
+                browse_name: "2:Start".to_string(),
+                display_name: "Start".to_string(),
+                description: "Start the conveyor belt".to_string(),
+                input_arguments: vec![],
+                output_arguments: vec![MethodArgument {
+                    name: "Result".to_string(),
+                    data_type: "String".to_string(),
+                    description: "Operation result".to_string(),
+                }],
+            }),
+            "ns=2;s=Line1.Conveyor.Stop" => Ok(MethodInfo {
+                node_id: method_node_id.to_string(),
+                browse_name: "2:Stop".to_string(),
+                display_name: "Stop".to_string(),
+                description: "Stop the conveyor belt".to_string(),
+                input_arguments: vec![MethodArgument {
+                    name: "Emergency".to_string(),
+                    data_type: "Boolean".to_string(),
+                    description: "If true, perform emergency stop (immediate halt)".to_string(),
+                }],
+                output_arguments: vec![MethodArgument {
+                    name: "Result".to_string(),
+                    data_type: "String".to_string(),
+                    description: "Operation result".to_string(),
+                }],
+            }),
+            "ns=2;s=Line1.Conveyor.SetSpeed" => Ok(MethodInfo {
+                node_id: method_node_id.to_string(),
+                browse_name: "2:SetSpeed".to_string(),
+                display_name: "Set Speed".to_string(),
+                description: "Set the conveyor belt speed".to_string(),
+                input_arguments: vec![
+                    MethodArgument {
+                        name: "Speed".to_string(),
+                        data_type: "Double".to_string(),
+                        description: "Target speed in meters per minute (0.1 - 10.0)".to_string(),
+                    },
+                    MethodArgument {
+                        name: "RampTime".to_string(),
+                        data_type: "UInt32".to_string(),
+                        description: "Time in milliseconds to reach target speed".to_string(),
+                    },
+                ],
+                output_arguments: vec![
+                    MethodArgument {
+                        name: "ActualSpeed".to_string(),
+                        data_type: "Double".to_string(),
+                        description: "Achieved speed after ramp".to_string(),
+                    },
+                    MethodArgument {
+                        name: "Result".to_string(),
+                        data_type: "String".to_string(),
+                        description: "Operation result".to_string(),
+                    },
+                ],
+            }),
+            _ => Err(format!("Method not found: {method_node_id}")),
+        }
+    }
+
+    /// Execute a simulated method call with realistic results
+    pub fn call_method(&self, request: &CallMethodRequest) -> Result<CallMethodResult, String> {
+        let method = &request.method_node_id;
+        match method.as_str() {
+            n if n.ends_with(".Reset") => Ok(CallMethodResult {
+                status_code: "Good".to_string(),
+                output_arguments: vec!["Reset completed successfully".to_string()],
+            }),
+            n if n.ends_with(".Calibrate") => {
+                let axis = request
+                    .input_arguments
+                    .first()
+                    .map(|a| a.value.as_str())
+                    .unwrap_or("All");
+                let offset: f64 = rand::thread_rng().gen_range(-0.05..0.05);
+                Ok(CallMethodResult {
+                    status_code: "Good".to_string(),
+                    output_arguments: vec![format!("{offset:.4}")],
+                })
+            }
+            n if n.ends_with(".Start") => Ok(CallMethodResult {
+                status_code: "Good".to_string(),
+                output_arguments: vec!["Conveyor started".to_string()],
+            }),
+            n if n.ends_with(".Stop") => {
+                let emergency = request
+                    .input_arguments
+                    .first()
+                    .map(|a| a.value == "true")
+                    .unwrap_or(false);
+                let msg = if emergency {
+                    "Emergency stop executed"
+                } else {
+                    "Conveyor stopped"
+                };
+                Ok(CallMethodResult {
+                    status_code: "Good".to_string(),
+                    output_arguments: vec![msg.to_string()],
+                })
+            }
+            n if n.ends_with(".SetSpeed") => {
+                let speed: f64 = request
+                    .input_arguments
+                    .first()
+                    .and_then(|a| a.value.parse().ok())
+                    .unwrap_or(1.0);
+                let clamped = speed.clamp(0.1, 10.0);
+                Ok(CallMethodResult {
+                    status_code: "Good".to_string(),
+                    output_arguments: vec![
+                        format!("{clamped:.2}"),
+                        format!("Speed set to {clamped:.2} m/min"),
+                    ],
+                })
+            }
+            _ => Err(format!("Unknown method: {method}")),
+        }
+    }
 }
 
 fn node_obj(id: &str, browse: &str, display: &str) -> BrowseNode {

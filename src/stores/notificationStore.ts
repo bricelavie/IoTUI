@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { getSetting } from "@/stores/settingsStore";
 
 export type NotificationType = "success" | "error" | "warning" | "info";
 
@@ -29,7 +30,7 @@ export const useNotificationStore = create<NotificationStore>((set) => ({
       ...n,
       id,
       timestamp: Date.now(),
-      duration: n.duration ?? (n.type === "error" ? 8000 : 4000),
+      duration: n.duration ?? (n.type === "error" ? getSetting("errorToastDuration") : getSetting("normalToastDuration")),
     };
     set((state) => ({
       notifications: [...state.notifications, notification],

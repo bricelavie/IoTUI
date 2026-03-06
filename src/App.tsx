@@ -13,9 +13,87 @@ import { MethodCaller } from "@/components/opcua/MethodCaller";
 import { DataExport } from "@/components/opcua/DataExport";
 import { Dashboard } from "@/components/opcua/Dashboard";
 import { EventViewer } from "@/components/opcua/EventViewer";
+import { LogPanel } from "@/components/opcua/LogPanel";
+import { SettingsPanel } from "@/components/opcua/SettingsPanel";
 import { useAppStore } from "@/stores/appStore";
 import { useConnectionStore } from "@/stores/connectionStore";
+import { startBackendLogPolling, stopBackendLogPolling } from "@/services/logger";
 import type { ViewMode } from "@/types/opcua";
+
+// ─── Error Boundary ──────────────────────────────────────────────
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+  errorInfo: React.ErrorInfo | null;
+}
+
+class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  ErrorBoundaryState
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null, errorInfo: null };
+  }
+
+  static getDerivedStateFromError(error: Error): Partial<ErrorBoundaryState> {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    this.setState({ errorInfo });
+    console.error("[ErrorBoundary]", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full p-6 text-center">
+          <div className="max-w-lg w-full space-y-4">
+            <div className="w-12 h-12 mx-auto rounded-full bg-iot-red/10 border border-iot-red/20 flex items-center justify-center">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-iot-red">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="15" y1="9" x2="9" y2="15" />
+                <line x1="9" y1="9" x2="15" y2="15" />
+              </svg>
+            </div>
+            <h2 className="text-sm font-semibold text-iot-text-primary">
+              Something went wrong
+            </h2>
+            <div className="bg-iot-bg-base border border-iot-border rounded-lg p-3 text-left">
+              <p className="text-xs font-mono text-iot-red break-all">
+                {this.state.error?.message || "Unknown error"}
+              </p>
+              {this.state.error?.stack && (
+                <pre className="mt-2 text-2xs font-mono text-iot-text-muted whitespace-pre-wrap break-all max-h-40 overflow-auto">
+                  {this.state.error.stack}
+                </pre>
+              )}
+              {this.state.errorInfo?.componentStack && (
+                <details className="mt-2">
+                  <summary className="text-2xs text-iot-text-disabled cursor-pointer hover:text-iot-text-muted">
+                    Component stack
+                  </summary>
+                  <pre className="mt-1 text-2xs font-mono text-iot-text-disabled whitespace-pre-wrap break-all max-h-32 overflow-auto">
+                    {this.state.errorInfo.componentStack}
+                  </pre>
+                </details>
+              )}
+            </div>
+            <button
+              onClick={() => this.setState({ hasError: false, error: null, errorInfo: null })}
+              className="px-4 py-1.5 text-xs font-medium rounded bg-iot-cyan/20 text-iot-cyan border border-iot-cyan/30 hover:bg-iot-cyan/30 transition-colors"
+            >
+              Try Again
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 function MainContent() {
   const { activeView } = useAppStore();
@@ -23,6 +101,14 @@ function MainContent() {
 
   if (activeView === "connection") {
     return <ConnectionPanel />;
+  }
+
+  if (activeView === "logs") {
+    return <LogPanel />;
+  }
+
+  if (activeView === "settings") {
+    return <SettingsPanel />;
   }
 
   if (!activeConnectionId) {
@@ -84,6 +170,12 @@ export default function App() {
   const disconnect = useConnectionStore((s) => s.disconnect);
   const activeConnectionId = useConnectionStore((s) => s.activeConnectionId);
 
+  // Start backend log polling on mount
+  useEffect(() => {
+    startBackendLogPolling();
+    return () => stopBackendLogPolling();
+  }, []);
+
   // Global keyboard shortcuts
   useEffect(() => {
     const viewShortcuts: Record<string, ViewMode> = {
@@ -94,12 +186,14 @@ export default function App() {
       "5": "events",
       "6": "methods",
       "7": "export",
+      "8": "logs",
+      "9": "settings",
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
 
-      // Ctrl/Cmd+1-8 for view navigation
+      // Ctrl/Cmd+1-9 for view navigation
       if (mod && viewShortcuts[e.key]) {
         e.preventDefault();
         setActiveView(viewShortcuts[e.key]);
@@ -130,7 +224,9 @@ export default function App() {
           <div className="flex flex-col flex-1 min-w-0">
             <Header />
             <main className="flex-1 min-h-0 overflow-hidden">
-              <MainContent />
+              <ErrorBoundary>
+                <MainContent />
+              </ErrorBoundary>
             </main>
           </div>
         </div>

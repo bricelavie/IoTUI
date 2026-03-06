@@ -4,6 +4,7 @@ import { useSubscriptionStore } from "@/stores/subscriptionStore";
 import { Modal } from "@/components/ui/Modal";
 import { Button, Badge } from "@/components/ui";
 import { toast } from "@/stores/notificationStore";
+import { useSettingsStore } from "@/stores/settingsStore";
 import {
   Eye,
   Plus,
@@ -37,6 +38,10 @@ export const MonitorDialog: React.FC<MonitorDialogProps> = ({
     getSubscriptionsForNode,
   } = useSubscriptionStore();
 
+  const defaultPublishingInterval = useSettingsStore((s) => s.defaultPublishingInterval);
+  const defaultSamplingInterval = useSettingsStore((s) => s.defaultSamplingInterval);
+  const defaultQueueSize = useSettingsStore((s) => s.defaultQueueSize);
+
   // "existing" = pick an existing sub, "new" = create a new one
   const [mode, setMode] = useState<"existing" | "new">(
     subscriptions.length === 0 ? "new" : "existing"
@@ -45,9 +50,9 @@ export const MonitorDialog: React.FC<MonitorDialogProps> = ({
     activeSubscriptionId
   );
   const [newSubName, setNewSubName] = useState("");
-  const [publishingInterval, setPublishingInterval] = useState("500");
-  const [samplingInterval, setSamplingInterval] = useState("500");
-  const [queueSize, setQueueSize] = useState("10");
+  const [publishingInterval, setPublishingInterval] = useState(String(defaultPublishingInterval));
+  const [samplingInterval, setSamplingInterval] = useState(String(defaultSamplingInterval));
+  const [queueSize, setQueueSize] = useState(String(defaultQueueSize));
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Reset state when dialog opens
@@ -56,9 +61,9 @@ export const MonitorDialog: React.FC<MonitorDialogProps> = ({
       setMode(subscriptions.length === 0 ? "new" : "existing");
       setSelectedSubId(activeSubscriptionId ?? subscriptions[0]?.id ?? null);
       setNewSubName("");
-      setPublishingInterval("500");
-      setSamplingInterval("500");
-      setQueueSize("10");
+      setPublishingInterval(String(defaultPublishingInterval));
+      setSamplingInterval(String(defaultSamplingInterval));
+      setQueueSize(String(defaultQueueSize));
       setIsSubmitting(false);
     }
   }, [open]);

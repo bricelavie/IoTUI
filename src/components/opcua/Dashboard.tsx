@@ -55,7 +55,7 @@ const DashboardTile: React.FC<{ value: MonitoredValue }> = ({ value }) => {
 
       {/* Chart — full width, edge-to-edge with controls */}
       {hasNumericData && (
-        <div className="px-1 flex-1 min-w-0" ref={chartContainerRef}>
+        <div className="px-1 pb-2 flex-1 min-w-0" ref={chartContainerRef}>
           <RealtimeChart
             data={value.history}
             width={chartWidth}

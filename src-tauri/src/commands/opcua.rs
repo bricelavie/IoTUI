@@ -1,3 +1,4 @@
+use crate::logging;
 use crate::state::AppState;
 use crate::ua_client::types::*;
 use tauri::State;
@@ -157,6 +158,18 @@ pub async fn opcua_get_subscriptions(
 // ─── Method Calls ────────────────────────────────────────────────
 
 #[tauri::command]
+pub async fn opcua_get_method_info(
+    state: State<'_, AppState>,
+    connection_id: String,
+    method_node_id: String,
+) -> Result<MethodInfo, String> {
+    state
+        .ua_manager
+        .get_method_info(&connection_id, &method_node_id)
+        .await
+}
+
+#[tauri::command]
 pub async fn opcua_call_method(
     state: State<'_, AppState>,
     connection_id: String,
@@ -189,4 +202,18 @@ pub async fn opcua_poll_events(
     connection_id: String,
 ) -> Result<Vec<EventData>, String> {
     state.ua_manager.poll_events(&connection_id).await
+}
+
+// ─── Logging ─────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn opcua_get_backend_logs() -> Result<Vec<logging::BackendLogEntry>, String> {
+    Ok(logging::drain_logs())
+}
+
+#[tauri::command]
+pub async fn opcua_set_log_level(level: String) -> Result<String, String> {
+    let filter = logging::parse_level(&level);
+    logging::set_level(filter);
+    Ok(logging::current_level().to_string().to_lowercase())
 }

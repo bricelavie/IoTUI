@@ -117,7 +117,7 @@ export const ConnectionPanel: React.FC = () => {
   const [certPath, setCertPath] = useState("");
   const [keyPath, setKeyPath] = useState("");
   const [urlError, setUrlError] = useState("");
-  const [useSimulator, setUseSimulator] = useState(true);
+  const [useSimulator, setUseSimulator] = useState(false);
 
   // Profiles state
   const [profiles, setProfiles] = useState<SavedProfile[]>([]);

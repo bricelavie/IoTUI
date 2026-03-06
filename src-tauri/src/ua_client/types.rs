@@ -12,8 +12,7 @@ pub struct ConnectionConfig {
     pub username: Option<String>,
     pub password: Option<String>,
     pub session_timeout: Option<u32>,
-    /// When true, use the built-in simulator instead of a real OPC UA connection.
-    /// Defaults to true when the opcua-live feature is not enabled.
+    /// When true, use the built-in simulator instead of connecting to an external OPC UA server.
     #[serde(default)]
     pub use_simulator: bool,
 }
@@ -215,10 +214,16 @@ pub struct MethodInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypedArgValue {
+    pub value: String,
+    pub data_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallMethodRequest {
     pub object_node_id: String,
     pub method_node_id: String,
-    pub input_arguments: Vec<String>,
+    pub input_arguments: Vec<TypedArgValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

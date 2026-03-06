@@ -3,15 +3,15 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::simulator::OpcUaSimulator;
 use super::types::*;
-use super::real_client::RealOpcUaConnection;
+use super::client::OpcUaConnection;
 
 /// Backend kind for a connection
 enum ConnectionBackend {
     Simulator,
-    Real(RealOpcUaConnection),
+    Live(OpcUaConnection),
 }
 
-/// Manages all OPC UA client connections (both simulator and real)
+/// Manages all OPC UA client connections (both simulator and live)
 pub struct UaClientManager {
     connections: tokio::sync::Mutex<HashMap<String, ConnectionState>>,
     simulator: OpcUaSimulator,
@@ -58,11 +58,11 @@ impl UaClientManager {
             ConnectionBackend::Simulator
         } else {
             log::info!(
-                "Connecting via real OPC UA client for: {}",
+                "Connecting via OPC UA client for: {}",
                 config.endpoint_url
             );
-            let conn = RealOpcUaConnection::connect(&config).await?;
-            ConnectionBackend::Real(conn)
+            let conn = OpcUaConnection::connect(&config).await?;
+            ConnectionBackend::Live(conn)
         };
 
         let mut conns = self.connections.lock().await;
@@ -84,10 +84,10 @@ impl UaClientManager {
             .remove(connection_id)
             .ok_or_else(|| "Connection not found".to_string())?;
 
-        // Clean up real connections
+        // Clean up live connections
         match state.backend {
             ConnectionBackend::Simulator => {}
-            ConnectionBackend::Real(conn) => {
+            ConnectionBackend::Live(conn) => {
                 let _ = conn.disconnect().await;
             }
         }
@@ -96,11 +96,11 @@ impl UaClientManager {
     }
 
     pub async fn discover_endpoints(&self, url: &str) -> Result<Vec<EndpointInfo>, String> {
-        // Try real discovery first
-        match RealOpcUaConnection::discover_endpoints(url).await {
+        // Try live discovery first
+        match OpcUaConnection::discover_endpoints(url).await {
             Ok(endpoints) if !endpoints.is_empty() => return Ok(endpoints),
             Err(e) => {
-                log::warn!("Real endpoint discovery failed, falling back to simulator: {e}");
+                log::warn!("Endpoint discovery failed, falling back to simulator: {e}");
             }
             _ => {}
         }
@@ -147,7 +147,7 @@ impl UaClientManager {
 
         match &conn.backend {
             ConnectionBackend::Simulator => Ok(self.simulator.browse(node_id)),
-            ConnectionBackend::Real(real) => real.browse(node_id).await,
+            ConnectionBackend::Live(client) => client.browse(node_id).await,
         }
     }
 
@@ -163,7 +163,7 @@ impl UaClientManager {
 
         match &conn.backend {
             ConnectionBackend::Simulator => Ok(self.simulator.read_node_details(node_id)),
-            ConnectionBackend::Real(real) => real.read_node_details(node_id).await,
+            ConnectionBackend::Live(client) => client.read_node_details(node_id).await,
         }
     }
 
@@ -181,7 +181,7 @@ impl UaClientManager {
 
         match &conn.backend {
             ConnectionBackend::Simulator => Ok(self.simulator.read_values(node_ids)),
-            ConnectionBackend::Real(real) => real.read_values(node_ids).await,
+            ConnectionBackend::Live(client) => client.read_values(node_ids).await,
         }
     }
 
@@ -197,7 +197,7 @@ impl UaClientManager {
 
         match &conn.backend {
             ConnectionBackend::Simulator => Ok(self.simulator.write_value(request)),
-            ConnectionBackend::Real(real) => real.write_value(request).await,
+            ConnectionBackend::Live(client) => client.write_value(request).await,
         }
     }
 
@@ -231,7 +231,7 @@ impl UaClientManager {
                     revised_max_keep_alive_count: request.max_keep_alive_count,
                 })
             }
-            ConnectionBackend::Real(real) => real.create_subscription(request).await,
+            ConnectionBackend::Live(client) => client.create_subscription(request).await,
         }
     }
 
@@ -252,7 +252,7 @@ impl UaClientManager {
                     .ok_or("Subscription not found")?;
                 Ok(())
             }
-            ConnectionBackend::Real(real) => real.delete_subscription(subscription_id).await,
+            ConnectionBackend::Live(client) => client.delete_subscription(subscription_id).await,
         }
     }
 
@@ -289,8 +289,8 @@ impl UaClientManager {
 
                 Ok(ids)
             }
-            ConnectionBackend::Real(real) => {
-                real.add_monitored_items(subscription_id, items).await
+            ConnectionBackend::Live(client) => {
+                client.add_monitored_items(subscription_id, items).await
             }
         }
     }
@@ -315,8 +315,8 @@ impl UaClientManager {
                 sub.items.retain(|(id, _, _)| !item_ids.contains(id));
                 Ok(())
             }
-            ConnectionBackend::Real(real) => {
-                real.remove_monitored_items(subscription_id, item_ids).await
+            ConnectionBackend::Live(client) => {
+                client.remove_monitored_items(subscription_id, item_ids).await
             }
         }
     }
@@ -339,7 +339,7 @@ impl UaClientManager {
                     .ok_or("Subscription not found")?;
                 Ok(self.simulator.poll_values(subscription_id, &sub.items))
             }
-            ConnectionBackend::Real(real) => real.poll_subscription(subscription_id),
+            ConnectionBackend::Live(client) => client.poll_subscription(subscription_id),
         }
     }
 
@@ -371,11 +371,27 @@ impl UaClientManager {
                         .collect(),
                 })
                 .collect()),
-            ConnectionBackend::Real(real) => Ok(real.get_subscriptions()),
+            ConnectionBackend::Live(client) => Ok(client.get_subscriptions()),
         }
     }
 
     // ─── Method Calls ────────────────────────────────────────────
+
+    pub async fn get_method_info(
+        &self,
+        connection_id: &str,
+        method_node_id: &str,
+    ) -> Result<MethodInfo, String> {
+        let conns = self.connections.lock().await;
+        let conn = conns
+            .get(connection_id)
+            .ok_or_else(|| "Connection not found".to_string())?;
+
+        match &conn.backend {
+            ConnectionBackend::Simulator => self.simulator.get_method_info(method_node_id),
+            ConnectionBackend::Live(client) => client.get_method_info(method_node_id).await,
+        }
+    }
 
     pub async fn call_method(
         &self,
@@ -388,14 +404,8 @@ impl UaClientManager {
             .ok_or_else(|| "Connection not found".to_string())?;
 
         match &conn.backend {
-            ConnectionBackend::Simulator => {
-                // Simulate method execution
-                Ok(CallMethodResult {
-                    status_code: "Good".to_string(),
-                    output_arguments: vec!["Success".to_string()],
-                })
-            }
-            ConnectionBackend::Real(real) => real.call_method(request).await,
+            ConnectionBackend::Simulator => self.simulator.call_method(request),
+            ConnectionBackend::Live(client) => client.call_method(request).await,
         }
     }
 
@@ -409,12 +419,7 @@ impl UaClientManager {
 
         match &conn.backend {
             ConnectionBackend::Simulator => Ok(self.simulator.generate_events()),
-            ConnectionBackend::Real(_real) => {
-                // Real event polling would require EventFilter subscription setup
-                // For now, return empty events for real connections
-                // TODO: Implement real OPC UA event subscriptions
-                Ok(vec![])
-            }
+            ConnectionBackend::Live(client) => Ok(client.poll_events()),
         }
     }
 }

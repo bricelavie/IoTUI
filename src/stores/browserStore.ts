@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { BrowseNode, NodeDetails, TreeNodeState } from "@/types/opcua";
 import * as opcua from "@/services/opcua";
 import { toast } from "@/stores/notificationStore";
+import { log } from "@/services/logger";
 
 interface BreadcrumbItem {
   nodeId: string;
@@ -87,6 +88,7 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
 
   expandNode: async (connectionId: string, nodeId: string) => {
     const { tree } = get();
+    log("debug", "action", "expandNode", `Expanding node ${nodeId}`);
 
     set({
       tree: setNodeState(tree, nodeId, (n) => ({ ...n, loading: true })),
@@ -129,7 +131,9 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
   },
 
   selectNode: async (connectionId: string, nodeId: string) => {
-    set({ selectedNodeId: nodeId, isLoadingDetails: true });
+    log("debug", "action", "selectNode", `Selected node ${nodeId}`);
+    const isRefresh = get().selectedNodeId === nodeId && get().selectedNodeDetails !== null;
+    set({ selectedNodeId: nodeId, isLoadingDetails: !isRefresh });
     try {
       const details = await opcua.readNodeDetails(connectionId, nodeId);
 

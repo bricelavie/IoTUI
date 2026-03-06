@@ -1,5 +1,6 @@
 mod commands;
 mod error;
+mod logging;
 mod state;
 mod ua_client;
 
@@ -7,7 +8,7 @@ use state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::init();
+    logging::init(log::LevelFilter::Info);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -28,8 +29,11 @@ pub fn run() {
             commands::opcua::opcua_poll_subscription,
             commands::opcua::opcua_get_subscriptions,
             commands::opcua::opcua_call_method,
+            commands::opcua::opcua_get_method_info,
             commands::opcua::opcua_remove_monitored_items,
             commands::opcua::opcua_poll_events,
+            commands::opcua::opcua_get_backend_logs,
+            commands::opcua::opcua_set_log_level,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

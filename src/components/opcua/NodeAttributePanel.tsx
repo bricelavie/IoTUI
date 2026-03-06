@@ -219,7 +219,7 @@ export const NodeAttributePanel: React.FC = () => {
                 <Copy size={10} />
               </button>
             </div>
-            {details.description && (
+            {details.description && details.description !== "[null]" && (
               <p className="text-xs text-iot-text-muted mt-1">{details.description}</p>
             )}
           </div>

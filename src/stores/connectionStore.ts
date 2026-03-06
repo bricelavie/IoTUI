@@ -6,6 +6,7 @@ import type {
   EndpointInfo,
 } from "@/types/opcua";
 import * as opcua from "@/services/opcua";
+import { log } from "@/services/logger";
 
 interface ConnectionStore {
   // State
@@ -45,9 +46,11 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
 
   connect: async (config: ConnectionConfig) => {
     set({ isConnecting: true, error: null });
+    log("info", "connection", "connect", `Connecting to ${config.endpoint_url} (${config.name})`);
     try {
       const id = await opcua.connect(config);
       const connections = await opcua.getConnections();
+      log("info", "connection", "connect", `Connected: ${config.name} [${id}]`);
       set({
         connections,
         activeConnectionId: id,
@@ -55,21 +58,25 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       });
       return id;
     } catch (e) {
+      log("error", "connection", "connect", `Connection failed: ${String(e)}`);
       set({ error: String(e), isConnecting: false });
       throw e;
     }
   },
 
   disconnect: async (id: string) => {
+    log("info", "connection", "disconnect", `Disconnecting [${id}]`);
     try {
       await opcua.disconnect(id);
       const connections = await opcua.getConnections();
       const { activeConnectionId } = get();
+      log("info", "connection", "disconnect", `Disconnected [${id}]`);
       set({
         connections,
         activeConnectionId: activeConnectionId === id ? null : activeConnectionId,
       });
     } catch (e) {
+      log("error", "connection", "disconnect", `Disconnect failed: ${String(e)}`);
       set({ error: String(e) });
     }
   },

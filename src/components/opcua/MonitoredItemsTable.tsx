@@ -372,14 +372,14 @@ const ExpandedRowDetail: React.FC<{ value: MonitoredValue }> = ({ value }) => {
   }, []);
 
   return (
-    <div className="flex gap-4 items-stretch">
-      {/* Chart — fills remaining width, tall enough to drive row height */}
+    <div className="flex gap-4">
+      {/* Chart — fixed height, does not stretch to fill */}
       {hasNumericData && (
         <div className="flex-1 min-w-0" ref={chartContainerRef}>
           <RealtimeChart
             data={value.history}
             width={chartWidth}
-            height={280}
+            height={260}
             color="#00d4aa"
             showGrid
             showAxis
@@ -389,22 +389,22 @@ const ExpandedRowDetail: React.FC<{ value: MonitoredValue }> = ({ value }) => {
         </div>
       )}
 
-      {/* Stats — stacked vertically on the right, stretch to match chart height */}
+      {/* Stats panel on the right */}
       {hasNumericData && (
-        <div className="flex flex-col gap-2 min-w-[130px] flex-shrink-0">
-          <div className="flex-1 bg-iot-bg-elevated rounded p-2.5 border border-iot-border flex flex-col justify-center">
+        <div className="flex flex-col gap-2 min-w-[120px] flex-shrink-0 self-start">
+          <div className="bg-iot-bg-elevated rounded p-2 border border-iot-border">
             <span className="data-label text-2xs">Min</span>
             <p className="data-value">{stats.min.toFixed(3)}</p>
           </div>
-          <div className="flex-1 bg-iot-bg-elevated rounded p-2.5 border border-iot-border flex flex-col justify-center">
+          <div className="bg-iot-bg-elevated rounded p-2 border border-iot-border">
             <span className="data-label text-2xs">Max</span>
             <p className="data-value">{stats.max.toFixed(3)}</p>
           </div>
-          <div className="flex-1 bg-iot-bg-elevated rounded p-2.5 border border-iot-border flex flex-col justify-center">
+          <div className="bg-iot-bg-elevated rounded p-2 border border-iot-border">
             <span className="data-label text-2xs">Average</span>
             <p className="data-value">{stats.avg.toFixed(3)}</p>
           </div>
-          <div className="flex-1 bg-iot-bg-elevated rounded p-2.5 border border-iot-border flex flex-col justify-center">
+          <div className="bg-iot-bg-elevated rounded p-2 border border-iot-border">
             <span className="data-label text-2xs">Samples</span>
             <p className="data-value">{stats.count}</p>
           </div>

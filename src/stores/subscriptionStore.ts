@@ -8,6 +8,8 @@ import type {
 } from "@/types/opcua";
 import * as opcua from "@/services/opcua";
 import { toast } from "@/stores/notificationStore";
+import { getSetting } from "@/stores/settingsStore";
+import { log } from "@/services/logger";
 
 interface SubscriptionMeta {
   name: string;
@@ -51,8 +53,6 @@ interface SubscriptionStore {
   clearAll: () => void;
 }
 
-const MAX_HISTORY = 100;
-
 export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
   subscriptions: [],
   activeSubscriptionId: null,
@@ -65,7 +65,7 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
   createSubscription: async (connectionId, request, name) => {
     const { nextSubNumber, subscriptionMeta } = get();
     const defaults: CreateSubscriptionRequest = {
-      publishing_interval: 500,
+      publishing_interval: getSetting("defaultPublishingInterval"),
       lifetime_count: 60,
       max_keep_alive_count: 10,
       max_notifications_per_publish: 0,
@@ -85,18 +85,38 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
       subscriptionMeta: newMeta,
       nextSubNumber: nextSubNumber + 1,
     });
+    log("info", "subscription", "createSubscription", `Created "${subName}" (id=${result.subscription_id}, interval=${result.revised_publishing_interval}ms)`);
     toast.success("Subscription created", `${subName} (${result.revised_publishing_interval}ms)`);
     return result.subscription_id;
   },
 
   deleteSubscription: async (connectionId, subId) => {
-    const { stopPolling, activeSubscriptionId, subscriptionMeta } = get();
+    const { stopPolling, activeSubscriptionId, subscriptionMeta, subscriptions } = get();
     const name = subscriptionMeta.get(subId)?.name || `#${subId}`;
+    // Capture the subscription's monitored items BEFORE deleting
+    const deletedSub = subscriptions.find((s) => s.id === subId);
     if (activeSubscriptionId === subId) {
       stopPolling();
     }
     await opcua.deleteSubscription(connectionId, subId);
     const subs = await opcua.getSubscriptions(connectionId);
+
+    // Clean monitoredValues: remove nodes that no surviving subscription monitors
+    const newValues = new Map(get().monitoredValues);
+    if (deletedSub) {
+      const survivingNodeIds = new Set<string>();
+      for (const s of subs) {
+        for (const item of s.monitored_items) {
+          survivingNodeIds.add(item.node_id);
+        }
+      }
+      for (const item of deletedSub.monitored_items) {
+        if (!survivingNodeIds.has(item.node_id)) {
+          newValues.delete(item.node_id);
+        }
+      }
+    }
+
     const newMeta = new Map(subscriptionMeta);
     newMeta.delete(subId);
     set({
@@ -104,7 +124,9 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
       activeSubscriptionId:
         activeSubscriptionId === subId ? null : activeSubscriptionId,
       subscriptionMeta: newMeta,
+      monitoredValues: newValues,
     });
+    log("info", "subscription", "deleteSubscription", `Deleted "${name}" (id=${subId})`);
     toast.info("Subscription deleted", name);
   },
 
@@ -117,8 +139,14 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
   removeMonitoredItem: async (connectionId, subscriptionId, itemId, nodeId) => {
     await opcua.removeMonitoredItems(connectionId, subscriptionId, [itemId]);
     const subs = await opcua.getSubscriptions(connectionId);
+    // Only remove from monitoredValues if no other subscription monitors this node
     const newValues = new Map(get().monitoredValues);
-    newValues.delete(nodeId);
+    const stillMonitored = subs.some((s) =>
+      s.monitored_items.some((item) => item.node_id === nodeId)
+    );
+    if (!stillMonitored) {
+      newValues.delete(nodeId);
+    }
     set({ subscriptions: subs, monitoredValues: newValues });
     toast.info("Removed monitored item");
   },
@@ -131,8 +159,9 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
 
     // Use the subscription's publishing interval instead of hardcoded 500ms
     const sub = subscriptions.find((s) => s.id === subscriptionId);
-    const interval = sub?.publishing_interval ?? 500;
+    const interval = sub?.publishing_interval ?? getSetting("defaultPublishingInterval");
 
+    log("info", "subscription", "startPolling", `Polling sub ${subscriptionId} every ${interval}ms`);
     set({ isPolling: true, activeSubscriptionId: subscriptionId });
 
     const poll = async () => {
@@ -152,9 +181,10 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
           // Create a NEW array (not mutate in-place) so React detects the change
           let history = existing?.history ? [...existing.history] : [];
           if (isNumeric) {
+            const maxHistory = getSetting("maxHistoryPoints");
             history.push({ timestamp: Date.now(), value: numericValue });
-            if (history.length > MAX_HISTORY) {
-              history = history.slice(history.length - MAX_HISTORY);
+            if (history.length > maxHistory) {
+              history = history.slice(history.length - maxHistory);
             }
           }
 
@@ -184,6 +214,7 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
     const { pollIntervalId } = get();
     if (pollIntervalId) {
       clearInterval(pollIntervalId);
+      log("info", "subscription", "stopPolling", "Polling stopped");
     }
     set({ isPolling: false, pollIntervalId: null });
   },

@@ -14,10 +14,8 @@ interface RealtimeChartProps {
   showGrid?: boolean;
   showAxis?: boolean;
   label?: string;
-  /** Show industry-standard trend controls toolbar */
+  /** Show time range controls toolbar */
   showControls?: boolean;
-  /** "full" = all buttons (default), "minimal" = time range only */
-  controlsMode?: "full" | "minimal";
 }
 
 type TimeRange = "30s" | "1m" | "5m" | "all";
@@ -45,7 +43,6 @@ export const RealtimeChart: React.FC<RealtimeChartProps> = ({
   showAxis = true,
   label,
   showControls = false,
-  controlsMode = "full",
 }) => {
   // ─── Trend control state ────────────────────────────────────────
   const [timeRange, setTimeRange] = useState<TimeRange>("all");
@@ -167,11 +164,17 @@ export const RealtimeChart: React.FC<RealtimeChartProps> = ({
 
   return (
     <div className="flex flex-col">
-      {/* ─── Trend Controls Toolbar ─── */}
+      {/* ─── Controls + Label row ─── */}
       {showControls && (
-        <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
-          {/* Time range selector */}
-          <div className="flex items-center bg-iot-bg-elevated rounded border border-iot-border overflow-hidden">
+        <div className="flex items-center mb-1.5">
+          {/* Label on the left */}
+          {label && (
+            <span className="text-2xs text-iot-text-muted font-medium truncate mr-auto">
+              {label}
+            </span>
+          )}
+          {/* Time range selector — centered when no label, right-aligned when label present */}
+          <div className={`flex items-center bg-iot-bg-elevated rounded border border-iot-border overflow-hidden ${!label ? "mx-auto" : ""}`}>
             <span className="px-1.5 flex items-center">
               <Clock size={10} className="text-iot-text-disabled" />
             </span>
@@ -189,19 +192,12 @@ export const RealtimeChart: React.FC<RealtimeChartProps> = ({
               </button>
             ))}
           </div>
-
-          {/* Label / title on the right */}
-          {label && (
-            <span className="text-2xs text-iot-text-muted ml-auto font-medium truncate">
-              {label}
-            </span>
-          )}
         </div>
       )}
 
       {/* Label when no controls */}
       {!showControls && label && (
-        <span className="text-2xs text-iot-text-muted mb-1 block">{label}</span>
+        <span className="text-2xs text-iot-text-muted mb-1 block font-medium truncate">{label}</span>
       )}
 
       {/* ─── Chart SVG ─── */}

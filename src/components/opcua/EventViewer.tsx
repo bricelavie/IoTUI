@@ -3,6 +3,7 @@ import { useConnectionStore } from "@/stores/connectionStore";
 import { Badge, EmptyState, Button } from "@/components/ui";
 import { AlertTriangle, Pause, Play, Trash2, Filter, ChevronDown } from "lucide-react";
 import * as opcua from "@/services/opcua";
+import { useSettingsStore } from "@/stores/settingsStore";
 import type { EventData } from "@/types/opcua";
 
 type SeverityFilter = "all" | "low" | "medium" | "high" | "critical";
@@ -35,10 +36,10 @@ function severityBarColor(severity: number): string {
   return "bg-iot-text-disabled";
 }
 
-const MAX_EVENTS = 500;
-
 export const EventViewer: React.FC = () => {
   const { activeConnectionId } = useConnectionStore();
+  const maxEventEntries = useSettingsStore((s) => s.maxEventEntries);
+  const eventPollInterval = useSettingsStore((s) => s.eventPollInterval);
   const [events, setEvents] = useState<EventData[]>([]);
   const [isPolling, setIsPolling] = useState(true);
   const [filter, setFilter] = useState<SeverityFilter>("all");
@@ -52,23 +53,23 @@ export const EventViewer: React.FC = () => {
       const newEvents = await opcua.pollEvents(activeConnectionId);
       setEvents((prev) => {
         const combined = [...newEvents, ...prev];
-        return combined.slice(0, MAX_EVENTS);
+        return combined.slice(0, maxEventEntries);
       });
     } catch {
       // Silently ignore poll errors
     }
-  }, [activeConnectionId]);
+  }, [activeConnectionId, maxEventEntries]);
 
   useEffect(() => {
     if (isPolling && activeConnectionId) {
       // Initial poll
       pollEvents();
-      intervalRef.current = setInterval(pollEvents, 3000);
+      intervalRef.current = setInterval(pollEvents, eventPollInterval);
     }
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [isPolling, activeConnectionId, pollEvents]);
+  }, [isPolling, activeConnectionId, pollEvents, eventPollInterval]);
 
   const uniqueSources = useMemo(() => {
     const sources = new Set(events.map((e) => e.source_name));
@@ -282,7 +283,7 @@ export const EventViewer: React.FC = () => {
           <span className="w-2 h-2 rounded-sm bg-iot-text-disabled" /> Low: {stats.low}
         </span>
         <span className="ml-auto">
-          Buffer: {events.length}/{MAX_EVENTS}
+          Buffer: {events.length}/{maxEventEntries}
         </span>
       </div>
     </div>

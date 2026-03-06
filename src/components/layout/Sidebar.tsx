@@ -16,6 +16,8 @@ import {
   Cpu,
   LayoutDashboard,
   AlertTriangle,
+  ScrollText,
+  Settings,
 } from "lucide-react";
 
 interface NavItem {
@@ -33,6 +35,8 @@ const navItems: NavItem[] = [
   { id: "events", label: "Events", icon: <AlertTriangle size={18} />, requiresConnection: true },
   { id: "methods", label: "Methods", icon: <PlayCircle size={18} />, requiresConnection: true },
   { id: "export", label: "Export", icon: <Download size={18} />, requiresConnection: true },
+  { id: "logs", label: "Logs", icon: <ScrollText size={18} /> },
+  { id: "settings", label: "Settings", icon: <Settings size={18} /> },
 ];
 
 const protocolItems = [

@@ -164,10 +164,30 @@ export interface MonitoredItemInfo {
 
 // ─── Method Types ────────────────────────────────────────────────
 
+export interface MethodArgument {
+  name: string;
+  data_type: string;
+  description: string;
+}
+
+export interface MethodInfo {
+  node_id: string;
+  browse_name: string;
+  display_name: string;
+  description: string;
+  input_arguments: MethodArgument[];
+  output_arguments: MethodArgument[];
+}
+
+export interface TypedArgValue {
+  value: string;
+  data_type: string;
+}
+
 export interface CallMethodRequest {
   object_node_id: string;
   method_node_id: string;
-  input_arguments: string[];
+  input_arguments: TypedArgValue[];
 }
 
 export interface CallMethodResult {
@@ -187,7 +207,9 @@ export type ViewMode =
   | "methods"
   | "events"
   | "dashboard"
-  | "export";
+  | "export"
+  | "logs"
+  | "settings";
 
 export interface TreeNodeState {
   node: BrowseNode;
@@ -214,4 +236,33 @@ export interface EventData {
   timestamp: string;
   receive_time: string;
   source_node_id?: string;
+}
+
+// ─── Log Types ───────────────────────────────────────────────────
+
+export type LogLevel = "trace" | "debug" | "info" | "warn" | "error";
+
+export type LogCategory =
+  | "ipc"
+  | "backend"
+  | "subscription"
+  | "connection"
+  | "action";
+
+export interface LogEntry {
+  id: number;
+  timestamp: string;
+  level: LogLevel;
+  category: LogCategory;
+  source: string;
+  message: string;
+  duration?: number;
+  details?: string;
+}
+
+export interface BackendLogEntry {
+  timestamp: string;
+  level: string;
+  target: string;
+  message: string;
 }
