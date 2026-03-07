@@ -124,6 +124,7 @@ export function withLogging<TArgs extends unknown[], TResult>(
 // ─── Backend log polling ─────────────────────────────────────────
 
 let backendPollInterval: ReturnType<typeof setInterval> | null = null;
+let backendPollInFlight = false;
 
 function mapBackendLevel(level: string): LogLevel {
   switch (level.toLowerCase()) {
@@ -144,6 +145,8 @@ function mapBackendLevel(level: string): LogLevel {
 }
 
 async function pollBackendLogs() {
+  if (backendPollInFlight) return;
+  backendPollInFlight = true;
   try {
     const logs: BackendLogEntry[] = await invoke("opcua_get_backend_logs");
     if (logs.length === 0) return;
@@ -159,6 +162,8 @@ async function pollBackendLogs() {
     useLogStore.getState().addEntries(entries);
   } catch {
     // Silently ignore polling errors
+  } finally {
+    backendPollInFlight = false;
   }
 }
 

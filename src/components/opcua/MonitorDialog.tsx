@@ -66,7 +66,7 @@ export const MonitorDialog: React.FC<MonitorDialogProps> = ({
       setQueueSize(String(defaultQueueSize));
       setIsSubmitting(false);
     }
-  }, [open]);
+  }, [open, subscriptions, activeSubscriptionId, defaultPublishingInterval, defaultSamplingInterval, defaultQueueSize]);
 
   // Check for duplicates
   const existingMonitors = useMemo(

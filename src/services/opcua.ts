@@ -8,6 +8,8 @@ import type {
   BrowseNode,
   NodeDetails,
   ReadResult,
+  HistoryReadRequest,
+  HistoryReadResult,
   WriteRequest,
   WriteResult,
   CreateSubscriptionRequest,
@@ -87,6 +89,16 @@ export const writeValue = withLogging(
   "opcua_write_value",
   async (connectionId: string, request: WriteRequest): Promise<WriteResult> => {
     return invoke("opcua_write_value", { connectionId, request });
+  }
+);
+
+export const readHistory = withLogging(
+  "opcua_read_history",
+  async (
+    connectionId: string,
+    request: HistoryReadRequest
+  ): Promise<HistoryReadResult> => {
+    return invoke("opcua_read_history", { connectionId, request });
   }
 );
 

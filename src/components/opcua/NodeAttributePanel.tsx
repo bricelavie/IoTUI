@@ -18,7 +18,29 @@ import {
   X,
   Edit3,
   ExternalLink,
+  History,
 } from "lucide-react";
+import type { HistoryReadResult } from "@/types/opcua";
+
+function valueHint(dataType?: string): string {
+  switch (dataType) {
+    case "Boolean":
+      return "Use true/false or 1/0";
+    case "Int16":
+    case "Int32":
+    case "Int64":
+    case "UInt16":
+    case "UInt32":
+    case "UInt64":
+    case "Float":
+    case "Double":
+      return "Numeric value required";
+    case "String":
+      return "String value";
+    default:
+      return "Raw OPC UA literal";
+  }
+}
 
 export const NodeAttributePanel: React.FC = () => {
   const { selectedNodeId, selectedNodeDetails, isLoadingDetails, selectNode, navigateToNode } =
@@ -27,6 +49,7 @@ export const NodeAttributePanel: React.FC = () => {
   const {
     subscriptions,
     getSubscriptionsForNode,
+    setActiveSubscriptionId,
   } = useSubscriptionStore();
   const { setActiveView } = useAppStore();
 
@@ -42,6 +65,10 @@ export const NodeAttributePanel: React.FC = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
   const [isWriting, setIsWriting] = useState(false);
+  const [writeError, setWriteError] = useState<string | null>(null);
+  const refreshInFlightRef = useRef(false);
+  const [historyResult, setHistoryResult] = useState<HistoryReadResult | null>(null);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
 
   // Auto-refresh effect
   useEffect(() => {
@@ -51,7 +78,11 @@ export const NodeAttributePanel: React.FC = () => {
     }
     if (autoRefresh && activeConnectionId && selectedNodeId) {
       autoRefreshRef.current = setInterval(() => {
-        selectNode(activeConnectionId, selectedNodeId);
+        if (refreshInFlightRef.current) return;
+        refreshInFlightRef.current = true;
+        void selectNode(activeConnectionId, selectedNodeId).finally(() => {
+          refreshInFlightRef.current = false;
+        });
       }, refreshInterval);
     }
     return () => {
@@ -62,6 +93,7 @@ export const NodeAttributePanel: React.FC = () => {
   // Stop auto-refresh when node changes
   useEffect(() => {
     setIsEditing(false);
+    setWriteError(null);
   }, [selectedNodeId]);
 
   // Check if this node is already being monitored (must be before early returns)
@@ -122,13 +154,18 @@ export const NodeAttributePanel: React.FC = () => {
 
   const handleRefresh = () => {
     if (activeConnectionId && selectedNodeId) {
-      selectNode(activeConnectionId, selectedNodeId);
+      if (refreshInFlightRef.current) return;
+      refreshInFlightRef.current = true;
+      void selectNode(activeConnectionId, selectedNodeId).finally(() => {
+        refreshInFlightRef.current = false;
+      });
     }
   };
 
   const handleInlineWrite = async () => {
     if (!activeConnectionId || !details.data_type) return;
     setIsWriting(true);
+    setWriteError(null);
     try {
       const result = await opcua.writeValue(activeConnectionId, {
         node_id: details.node_id,
@@ -141,9 +178,11 @@ export const NodeAttributePanel: React.FC = () => {
         // Refresh the node details
         handleRefresh();
       } else {
+        setWriteError(result.status_code);
         toast.error("Write failed", result.status_code);
       }
     } catch (e) {
+      setWriteError(String(e));
       toast.error("Write failed", String(e));
     } finally {
       setIsWriting(false);
@@ -156,9 +195,33 @@ export const NodeAttributePanel: React.FC = () => {
     }
   };
 
+  const handleReadHistory = async () => {
+    if (!activeConnectionId) return;
+    setIsHistoryLoading(true);
+    try {
+      const end = new Date();
+      const start = new Date(end.getTime() - 60 * 60 * 1000);
+      const result = await opcua.readHistory(activeConnectionId, {
+        node_id: details.node_id,
+        start_time: start.toISOString(),
+        end_time: end.toISOString(),
+        max_values: 120,
+      });
+      setHistoryResult(result);
+      setActiveTab("history");
+    } catch (e) {
+      toast.error("History read failed", String(e));
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  };
+
   const tabs = [
     { id: "attributes", label: "Attributes", icon: <FileText size={12} /> },
     { id: "references", label: "References", icon: <Link2 size={12} /> },
+    ...(details.node_class === "Variable" && details.historizing
+      ? [{ id: "history", label: "History", icon: <History size={12} /> }]
+      : []),
   ];
 
   return (
@@ -197,6 +260,12 @@ export const NodeAttributePanel: React.FC = () => {
             >
               {isMonitored ? <Eye size={11} /> : <Eye size={11} />}
               {isMonitored ? "Monitoring" : "Monitor"}
+            </Button>
+          )}
+          {details.node_class === "Variable" && details.historizing && (
+            <Button variant="secondary" size="xs" onClick={handleReadHistory} loading={isHistoryLoading}>
+              <History size={11} />
+              History
             </Button>
           )}
         </div>
@@ -252,9 +321,9 @@ export const NodeAttributePanel: React.FC = () => {
                   ) : null
                 ) : null}
               </div>
-              {isEditing ? (
-                <div className="flex items-center gap-1 mt-1">
-                  <input
+                {isEditing ? (
+                  <div className="flex items-center gap-1 mt-1">
+                    <input
                     type="text"
                     value={editValue}
                     onChange={(e) => setEditValue(e.target.value)}
@@ -279,11 +348,15 @@ export const NodeAttributePanel: React.FC = () => {
                   >
                     <X size={12} />
                   </button>
-                </div>
-              ) : (
-                <p className="data-value mt-0.5 truncate">{details.value}</p>
-              )}
-            </div>
+                  </div>
+                ) : (
+                  <>
+                    <p className="data-value mt-0.5 truncate">{details.value}</p>
+                    <p className="text-2xs text-iot-text-disabled mt-1">{valueHint(details.data_type)}</p>
+                  </>
+                )}
+                {writeError && <p className="text-2xs text-iot-red mt-1">{writeError}</p>}
+              </div>
             <div className="bg-iot-bg-elevated rounded-md p-2 border border-iot-border">
               <span className="data-label">Data Type</span>
               <p className="text-xs text-iot-text-primary mt-0.5">
@@ -316,8 +389,7 @@ export const NodeAttributePanel: React.FC = () => {
               onClick={() => {
                 const firstSub = monitoringInfo[0];
                 if (firstSub) {
-                  useSubscriptionStore.getState().activeSubscriptionId !== firstSub.subId &&
-                    useSubscriptionStore.setState({ activeSubscriptionId: firstSub.subId });
+                  setActiveSubscriptionId(firstSub.subId);
                   setActiveView("subscriptions");
                 }
               }}
@@ -417,6 +489,53 @@ export const NodeAttributePanel: React.FC = () => {
                         </button>
                       </td>
                       <td className="py-1.5 text-iot-text-muted">{ref.target_node_class}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+
+        {activeTab === "history" && (
+          <div className="space-y-3">
+            {!historyResult ? (
+              <EmptyState
+                icon={<History size={24} />}
+                title="No History Loaded"
+                description="Read historical values for this node to inspect recent trends"
+                action={
+                  <Button variant="secondary" size="sm" onClick={handleReadHistory} loading={isHistoryLoading}>
+                    <History size={12} />
+                    Load History
+                  </Button>
+                }
+              />
+            ) : historyResult.values.length === 0 ? (
+              <EmptyState title="No history available" description="The server returned no historical samples for this time range" />
+            ) : (
+              <table className="w-full">
+                <thead>
+                  <tr className="text-left text-2xs text-iot-text-muted uppercase tracking-wider">
+                    <th className="pb-2 pr-4 font-medium">Timestamp</th>
+                    <th className="pb-2 pr-4 font-medium">Value</th>
+                    <th className="pb-2 pr-4 font-medium">Type</th>
+                    <th className="pb-2 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="text-xs">
+                  {historyResult.values.map((entry, index) => (
+                    <tr key={`${entry.source_timestamp || index}`} className="border-t border-iot-border/50 hover:bg-iot-bg-hover/50 transition-colors">
+                      <td className="py-1.5 pr-4 font-mono text-iot-text-secondary">
+                        {entry.source_timestamp ? new Date(entry.source_timestamp).toLocaleString() : "-"}
+                      </td>
+                      <td className="py-1.5 pr-4 font-mono text-iot-text-primary">{entry.value ?? "null"}</td>
+                      <td className="py-1.5 pr-4 text-iot-text-muted">{entry.data_type || "-"}</td>
+                      <td className="py-1.5">
+                        <Badge variant={entry.status_code === "Good" ? "success" : "danger"}>
+                          {entry.status_code}
+                        </Badge>
+                      </td>
                     </tr>
                   ))}
                 </tbody>

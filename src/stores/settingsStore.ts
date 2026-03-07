@@ -1,5 +1,7 @@
 import { create } from "zustand";
 
+const SETTINGS_KEY = "iotui_settings_v1";
+
 export interface AppSettings {
   // ─── Data & Subscriptions ────────────────────────────────────
   /** Max data points retained per monitored node */
@@ -60,9 +62,25 @@ const DEFAULTS: AppSettings = {
 
 export const useSettingsStore = create<SettingsStore>((set) => ({
   ...DEFAULTS,
+  ...(() => {
+    try {
+      const stored = localStorage.getItem(SETTINGS_KEY);
+      return stored ? { ...DEFAULTS, ...JSON.parse(stored) } : DEFAULTS;
+    } catch {
+      return DEFAULTS;
+    }
+  })(),
 
-  update: (partial) => set(partial),
-  reset: () => set(DEFAULTS),
+  update: (partial) =>
+    set((state) => {
+      const next = { ...state, ...partial };
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+      return partial;
+    }),
+  reset: () => {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(DEFAULTS));
+    set(DEFAULTS);
+  },
 }));
 
 /** Read a setting value outside of React (in stores, services, etc.) */

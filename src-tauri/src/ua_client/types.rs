@@ -44,6 +44,7 @@ pub struct ConnectionInfo {
     pub security_policy: String,
     pub security_mode: String,
     pub is_simulator: bool,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +136,30 @@ pub struct WriteResult {
     pub node_id: String,
     pub status_code: String,
     pub success: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryReadRequest {
+    pub node_id: String,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+    pub max_values: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryValue {
+    pub value: Option<String>,
+    pub data_type: Option<String>,
+    pub status_code: String,
+    pub source_timestamp: Option<String>,
+    pub server_timestamp: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryReadResult {
+    pub node_id: String,
+    pub values: Vec<HistoryValue>,
+    pub continuation_point: Option<String>,
 }
 
 // ─── Subscription Types ──────────────────────────────────────────
@@ -230,20 +255,6 @@ pub struct CallMethodRequest {
 pub struct CallMethodResult {
     pub status_code: String,
     pub output_arguments: Vec<String>,
-}
-
-// ─── Saved Profiles ──────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SavedProfile {
-    pub id: String,
-    pub name: String,
-    pub endpoint_url: String,
-    pub security_policy: String,
-    pub security_mode: String,
-    pub auth_type: AuthType,
-    pub username: Option<String>,
-    pub last_connected: Option<String>,
 }
 
 // ─── Event Types ─────────────────────────────────────────────────

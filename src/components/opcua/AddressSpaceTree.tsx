@@ -23,6 +23,7 @@ import {
   FolderTree,
   Play,
   ChevronsRight,
+  History,
 } from "lucide-react";
 import type { TreeNodeState, BrowseNode } from "@/types/opcua";
 
@@ -161,6 +162,7 @@ function getContextMenuItems(node: BrowseNode): ContextMenuItem[] {
     items.push(
       { id: "read", label: "Read Value", icon: <FileText size={12} /> },
       { id: "write", label: "Write Value...", icon: <PenTool size={12} /> },
+      { id: "history", label: "Read History", icon: <History size={12} /> },
       { id: "monitor", label: "Monitor", icon: <Eye size={12} /> },
       { id: "sep1", label: "", separator: true },
     );
@@ -188,6 +190,18 @@ function getContextMenuItems(node: BrowseNode): ContextMenuItem[] {
   });
 
   return items;
+}
+
+function inferMethodParent(nodeId: string): string | undefined {
+  const marker = ";s=";
+  const idx = nodeId.indexOf(marker);
+  if (idx < 0) return undefined;
+  const prefix = nodeId.slice(0, idx + marker.length);
+  const body = nodeId.slice(idx + marker.length);
+  const parts = body.split(".");
+  if (parts.length <= 1) return undefined;
+  parts.pop();
+  return prefix + parts.join(".");
 }
 
 export const AddressSpaceTree: React.FC = () => {
@@ -280,14 +294,12 @@ export const AddressSpaceTree: React.FC = () => {
         case "write":
           handleSelect(node.node_id);
           break;
+        case "history":
+          handleSelect(node.node_id);
+          useAppStore.getState().setActiveView("attributes");
+          break;
         case "call": {
-          // Infer parent object from method node ID (e.g. ns=2;s=Line1.Robot1.Reset -> ns=2;s=Line1.Robot1)
-          const parts = node.node_id.split(".");
-          let parentObjectId: string | undefined;
-          if (parts.length > 1) {
-            parts.pop();
-            parentObjectId = parts.join(".");
-          }
+          const parentObjectId = inferMethodParent(node.node_id);
           useAppStore.getState().setMethodTarget({
             methodNodeId: node.node_id,
             objectNodeId: parentObjectId,

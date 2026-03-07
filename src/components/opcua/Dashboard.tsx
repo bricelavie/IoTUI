@@ -93,16 +93,23 @@ const DashboardTile: React.FC<{ value: MonitoredValue }> = ({ value }) => {
 };
 
 export const Dashboard: React.FC = () => {
-  const { monitoredValues, isPolling, subscriptions, activeSubscriptionId } =
+  const { monitoredValues, activePollers, subscriptions, activeSubscriptionId, getSubStatus } =
     useSubscriptionStore();
   const { setActiveView } = useAppStore();
 
   const values = useMemo(
-    () => Array.from(monitoredValues.values()),
-    [monitoredValues]
+    () =>
+      Array.from(monitoredValues.values()).filter((value) =>
+        activeSubscriptionId !== null ? value.subscription_id === activeSubscriptionId : true
+      ),
+    [monitoredValues, activeSubscriptionId]
   );
 
   const activeSub = subscriptions.find((s) => s.id === activeSubscriptionId);
+  const activeSubStatus = activeSubscriptionId ? getSubStatus(activeSubscriptionId) : null;
+  const isStale = activeSubStatus?.lastUpdateAt
+    ? Date.now() - activeSubStatus.lastUpdateAt > Math.max((activeSub?.publishing_interval ?? 1000) * 4, 5000)
+    : false;
 
   if (values.length === 0) {
     return (
@@ -138,7 +145,7 @@ export const Dashboard: React.FC = () => {
           <Badge variant="info">{values.length} values</Badge>
         </div>
         <div className="flex items-center gap-2">
-          {isPolling && (
+          {activeSubscriptionId !== null && activePollers.has(activeSubscriptionId) && (
             <span className="flex items-center gap-1 text-2xs text-iot-cyan">
               <span className="w-1.5 h-1.5 rounded-full bg-iot-cyan animate-pulse-slow" />
               LIVE
@@ -147,6 +154,8 @@ export const Dashboard: React.FC = () => {
           {activeSub && (
             <Badge variant="default">{activeSub.publishing_interval}ms</Badge>
           )}
+          {isStale && <Badge variant="warning">Stale</Badge>}
+          {activeSubStatus?.lastError && <Badge variant="danger">Poll Error</Badge>}
         </div>
       </div>
 

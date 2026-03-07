@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::OnceLock;
 
-const MAX_LOG_ENTRIES: usize = 2000;
+const MAX_LOG_ENTRIES: usize = 10_000;
 
 /// A single captured log entry, serializable for the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]

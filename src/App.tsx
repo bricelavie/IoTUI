@@ -17,6 +17,7 @@ import { LogPanel } from "@/components/opcua/LogPanel";
 import { SettingsPanel } from "@/components/opcua/SettingsPanel";
 import { useAppStore } from "@/stores/appStore";
 import { useConnectionStore } from "@/stores/connectionStore";
+import { useSubscriptionStore } from "@/stores/subscriptionStore";
 import { startBackendLogPolling, stopBackendLogPolling } from "@/services/logger";
 import type { ViewMode } from "@/types/opcua";
 
@@ -169,12 +170,40 @@ export default function App() {
   const setActiveView = useAppStore((s) => s.setActiveView);
   const disconnect = useConnectionStore((s) => s.disconnect);
   const activeConnectionId = useConnectionStore((s) => s.activeConnectionId);
+  const refreshConnections = useConnectionStore((s) => s.refreshConnections);
+  const refreshStatusForActiveConnection = useConnectionStore((s) => s.refreshStatusForActiveConnection);
+  const refreshSubscriptions = useSubscriptionStore((s) => s.refreshSubscriptions);
+  const activeView = useAppStore((s) => s.activeView);
 
   // Start backend log polling on mount
   useEffect(() => {
     startBackendLogPolling();
     return () => stopBackendLogPolling();
   }, []);
+
+  useEffect(() => {
+    void refreshConnections();
+  }, [refreshConnections]);
+
+  useEffect(() => {
+    if (!activeConnectionId) return;
+    void refreshSubscriptions(activeConnectionId);
+  }, [activeConnectionId, refreshSubscriptions]);
+
+  useEffect(() => {
+    if (!activeConnectionId) return;
+    void refreshStatusForActiveConnection();
+    const interval = setInterval(() => {
+      void refreshStatusForActiveConnection();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [activeConnectionId, refreshStatusForActiveConnection]);
+
+  useEffect(() => {
+    if (!activeConnectionId && activeView !== "connection" && activeView !== "logs" && activeView !== "settings") {
+      setActiveView("connection");
+    }
+  }, [activeConnectionId, activeView, setActiveView]);
 
   // Global keyboard shortcuts
   useEffect(() => {

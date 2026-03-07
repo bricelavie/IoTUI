@@ -1,7 +1,6 @@
-import React, { useState, useMemo } from "react";
+import React, { useState } from "react";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
-import { useAppStore } from "@/stores/appStore";
 import { Button, Badge, EmptyState } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ui/Modal";
 import { toast } from "@/stores/notificationStore";
@@ -25,7 +24,7 @@ export const SubscriptionManager: React.FC = () => {
   const {
     subscriptions,
     activeSubscriptionId,
-    isPolling,
+    activePollers,
     subscriptionMeta,
     createSubscription,
     deleteSubscription,
@@ -33,9 +32,9 @@ export const SubscriptionManager: React.FC = () => {
     stopPolling,
     renameSubscription,
     getSubscriptionName,
+    getSubStatus,
+    setActiveSubscriptionId,
   } = useSubscriptionStore();
-  const { setActiveView } = useAppStore();
-
   const [publishingInterval, setPublishingInterval] = useState("500");
   const [newSubName, setNewSubName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
@@ -75,8 +74,8 @@ export const SubscriptionManager: React.FC = () => {
 
   const handleTogglePolling = (subId: number) => {
     if (!activeConnectionId) return;
-    if (isPolling && activeSubscriptionId === subId) {
-      stopPolling();
+    if (activePollers.has(subId)) {
+      stopPolling(subId);
       toast.info("Polling paused");
     } else {
       startPolling(activeConnectionId, subId);
@@ -86,8 +85,8 @@ export const SubscriptionManager: React.FC = () => {
 
   const handleSelectSubscription = (subId: number) => {
     if (!activeConnectionId) return;
-    useSubscriptionStore.setState({ activeSubscriptionId: subId });
-    if (!isPolling || activeSubscriptionId !== subId) {
+    setActiveSubscriptionId(subId);
+    if (!activePollers.has(subId) || activeSubscriptionId !== subId) {
       startPolling(activeConnectionId, subId);
     }
   };
@@ -220,8 +219,12 @@ export const SubscriptionManager: React.FC = () => {
                 subscriptionMeta.get(sub.id)?.name ||
                 `Subscription #${sub.id}`;
               const isActive = activeSubscriptionId === sub.id;
-              const isActivePolling = isPolling && isActive;
+              const isActivePolling = activePollers.has(sub.id);
               const isRenaming = editingName === sub.id;
+              const status = getSubStatus(sub.id);
+              const isStale = status.lastUpdateAt
+                ? Date.now() - status.lastUpdateAt > Math.max(sub.publishing_interval * 4, 5000)
+                : false;
 
               return (
                 <div
@@ -331,6 +334,8 @@ export const SubscriptionManager: React.FC = () => {
                         <Eye size={9} className="mr-0.5" />
                         {sub.monitored_items.length} items
                       </Badge>
+                      {isStale && <Badge variant="warning">Stale</Badge>}
+                      {status.lastError && <Badge variant="warning">Error</Badge>}
                     </div>
 
                     {/* Item preview (show first few items) */}

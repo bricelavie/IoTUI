@@ -6,7 +6,7 @@ import { Clock, Database, Activity, Zap } from "lucide-react";
 
 export const StatusBar: React.FC = () => {
   const { connections, activeConnectionId } = useConnectionStore();
-  const { subscriptions, monitoredValues, isPolling } = useSubscriptionStore();
+  const { subscriptions, monitoredValues, activePollers, activeSubscriptionId, getSubStatus } = useSubscriptionStore();
   const { activeProtocol } = useAppStore();
   const [time, setTime] = useState(new Date());
 
@@ -22,8 +22,8 @@ export const StatusBar: React.FC = () => {
   );
 
   // Determine the publishing interval for live rate display
-  const activeSubInterval = subscriptions.length > 0
-    ? subscriptions[0].publishing_interval
+  const activeSubInterval = activeSubscriptionId
+    ? subscriptions.find((sub) => sub.id === activeSubscriptionId)?.publishing_interval ?? null
     : null;
 
   const protocolLabel = activeProtocol === "opcua" ? "OPC UA" : activeProtocol === "mqtt" ? "MQTT" : "Modbus";
@@ -32,6 +32,10 @@ export const StatusBar: React.FC = () => {
       ? "Simulator"
       : "Live"
     : "—";
+  const activeSubStatus = activeSubscriptionId ? getSubStatus(activeSubscriptionId) : null;
+  const isStale = activeSubStatus?.lastUpdateAt
+    ? Date.now() - activeSubStatus.lastUpdateAt > Math.max((activeSubInterval ?? 1000) * 4, 5000)
+    : false;
 
   return (
     <div className="flex items-center justify-between h-6 px-3 bg-iot-bg-surface/80 border-t border-iot-border flex-shrink-0 text-2xs font-mono text-iot-text-disabled select-none">
@@ -44,7 +48,7 @@ export const StatusBar: React.FC = () => {
         {activeConn && (
           <>
             <span className="flex items-center gap-1">
-              <Activity size={10} className={isPolling ? "text-iot-cyan" : ""} />
+              <Activity size={10} className={activePollers.size > 0 ? "text-iot-cyan" : ""} />
               {totalMonitored} monitored
             </span>
             <span className="flex items-center gap-1">
@@ -56,7 +60,7 @@ export const StatusBar: React.FC = () => {
 
       {/* Center */}
       <div className="flex items-center gap-2">
-        {isPolling && (
+        {activePollers.size > 0 && (
           <span className="flex items-center gap-1 text-iot-cyan">
             <span className="w-1.5 h-1.5 rounded-full bg-iot-cyan animate-pulse-slow" />
             LIVE
@@ -65,6 +69,8 @@ export const StatusBar: React.FC = () => {
             )}
           </span>
         )}
+        {isStale && <span className="text-iot-amber">STALE</span>}
+        {activeSubStatus?.lastError && <span className="text-iot-red">POLL ERR</span>}
       </div>
 
       {/* Right section */}

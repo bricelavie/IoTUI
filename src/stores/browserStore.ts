@@ -4,6 +4,29 @@ import * as opcua from "@/services/opcua";
 import { toast } from "@/stores/notificationStore";
 import { log } from "@/services/logger";
 
+const BROWSER_STATE_KEY = "iotui_browser_state_v1";
+
+function loadBrowserState() {
+  try {
+    const raw = localStorage.getItem(BROWSER_STATE_KEY);
+    if (!raw) return { selectedNodeId: null as string | null };
+    const parsed = JSON.parse(raw);
+    return {
+      selectedNodeId:
+        typeof parsed.selectedNodeId === "string" ? parsed.selectedNodeId : null,
+    };
+  } catch {
+    return { selectedNodeId: null as string | null };
+  }
+}
+
+function persistBrowserState(selectedNodeId: string | null) {
+  localStorage.setItem(
+    BROWSER_STATE_KEY,
+    JSON.stringify({ selectedNodeId })
+  );
+}
+
 interface BreadcrumbItem {
   nodeId: string;
   label: string;
@@ -65,7 +88,7 @@ function setNodeState(
 
 export const useBrowserStore = create<BrowserStore>((set, get) => ({
   tree: [],
-  selectedNodeId: null,
+  selectedNodeId: loadBrowserState().selectedNodeId,
   selectedNodeDetails: null,
   isLoadingDetails: false,
   searchQuery: "",
@@ -81,6 +104,10 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
           loading: false,
         })),
       });
+      const selectedNodeId = get().selectedNodeId;
+      if (selectedNodeId) {
+        void get().selectNode(connectionId, selectedNodeId);
+      }
     } catch (e) {
       toast.error("Browse failed", String(e));
     }
@@ -133,6 +160,7 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
   selectNode: async (connectionId: string, nodeId: string) => {
     log("debug", "action", "selectNode", `Selected node ${nodeId}`);
     const isRefresh = get().selectedNodeId === nodeId && get().selectedNodeDetails !== null;
+    persistBrowserState(nodeId);
     set({ selectedNodeId: nodeId, isLoadingDetails: !isRefresh });
     try {
       const details = await opcua.readNodeDetails(connectionId, nodeId);
@@ -153,9 +181,6 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
   },
 
   navigateToNode: async (connectionId: string, nodeId: string) => {
-    // Expand the path to the target node in the tree, then select it
-    // For now, we just select the node and it will show in the details panel
-    // A more complete implementation would walk the tree, expanding parents
     const { selectNode } = get();
     await selectNode(connectionId, nodeId);
   },
@@ -163,12 +188,15 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
   setSearchQuery: (query: string) => set({ searchQuery: query }),
 
   reset: () =>
-    set({
-      tree: [],
-      selectedNodeId: null,
-      selectedNodeDetails: null,
-      isLoadingDetails: false,
-      searchQuery: "",
-      breadcrumbs: [{ nodeId: "i=84", label: "Root" }],
-    }),
+    (() => {
+      persistBrowserState(null);
+      set({
+        tree: [],
+        selectedNodeId: null,
+        selectedNodeDetails: null,
+        isLoadingDetails: false,
+        searchQuery: "",
+        breadcrumbs: [{ nodeId: "i=84", label: "Root" }],
+      });
+    })(),
 }));

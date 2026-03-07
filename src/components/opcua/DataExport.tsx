@@ -27,9 +27,11 @@ export const DataExport: React.FC = () => {
     if (values.length === 0) return "";
 
     if (fmt === "json") {
-      const data = values.map(([nodeId, val]) => ({
-        node_id: nodeId,
+      const data = values.map(([valueKey, val]) => ({
+        key: valueKey,
+        node_id: val.node_id,
         display_name: val.display_name,
+        subscription_id: val.subscription_id,
         value: val.numericValue ?? val.value,
         data_type: val.data_type,
         status: val.status_code,
@@ -51,12 +53,12 @@ export const DataExport: React.FC = () => {
 
     if (historyEnabled) {
       let rows: string[] = [headers.join(separator)];
-      for (const [nodeId, val] of values) {
+      for (const [, val] of values) {
         if (val.history.length > 0) {
           for (const h of val.history) {
             rows.push(
               [
-                esc(nodeId),
+                esc(val.node_id),
                 esc(val.display_name),
                 esc(h.value.toString()),
                 esc(val.data_type),
@@ -67,7 +69,7 @@ export const DataExport: React.FC = () => {
           }
         } else {
           rows.push(
-            [esc(nodeId), esc(val.display_name), esc(val.value), esc(val.data_type), esc(val.status_code), esc(val.source_timestamp || "")].join(
+            [esc(val.node_id), esc(val.display_name), esc(val.value), esc(val.data_type), esc(val.status_code), esc(val.source_timestamp || "")].join(
               separator
             )
           );
@@ -78,8 +80,8 @@ export const DataExport: React.FC = () => {
 
     const rows = [
       headers.join(separator),
-      ...values.map(([nodeId, val]) =>
-        [esc(nodeId), esc(val.display_name), esc(val.numericValue ?? val.value), esc(val.data_type), esc(val.status_code), esc(val.source_timestamp || "")].join(
+      ...values.map(([, val]) =>
+        [esc(val.node_id), esc(val.display_name), esc(val.numericValue ?? val.value), esc(val.data_type), esc(val.status_code), esc(val.source_timestamp || "")].join(
           separator
         )
       ),

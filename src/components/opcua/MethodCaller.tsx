@@ -40,8 +40,9 @@ const ArgumentInput: React.FC<{
   arg: MethodArgument;
   index: number;
   value: string;
+  error?: string;
   onChange: (value: string) => void;
-}> = ({ arg, index, value, onChange }) => {
+}> = ({ arg, index, value, error, onChange }) => {
   const placeholder = getPlaceholder(arg.data_type);
 
   return (
@@ -67,8 +68,13 @@ const ArgumentInput: React.FC<{
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
-          className="w-full bg-iot-bg-base border border-iot-border rounded px-2.5 py-1.5 text-xs font-mono text-iot-text-primary placeholder:text-iot-text-disabled focus:outline-none focus:border-iot-border-focus focus:ring-1 focus:ring-iot-border-focus/30 transition-colors"
+          className={`w-full bg-iot-bg-base border rounded px-2.5 py-1.5 text-xs font-mono text-iot-text-primary placeholder:text-iot-text-disabled focus:outline-none focus:ring-1 transition-colors ${
+            error
+              ? "border-iot-amber focus:border-iot-amber focus:ring-iot-amber/30"
+              : "border-iot-border focus:border-iot-border-focus focus:ring-iot-border-focus/30"
+          }`}
         />
+        {error && <div className="text-2xs text-iot-amber mt-1">{error}</div>}
       </div>
     </div>
   );
@@ -96,6 +102,46 @@ function getPlaceholder(dataType: string): string {
   }
 }
 
+function inferObjectNodeId(methodNodeId: string): string {
+  const trimmed = methodNodeId.trim();
+  if (!trimmed) return "";
+  const stringMarker = ";s=";
+  const idx = trimmed.indexOf(stringMarker);
+  if (idx >= 0) {
+    const prefix = trimmed.slice(0, idx + stringMarker.length);
+    const body = trimmed.slice(idx + stringMarker.length);
+    const parts = body.split(".");
+    if (parts.length > 1) {
+      parts.pop();
+      return prefix + parts.join(".");
+    }
+    return "";
+  }
+  return "";
+}
+
+function validateArgumentValue(arg: MethodArgument, value: string): string | null {
+  const trimmed = value.trim();
+  switch (arg.data_type) {
+    case "Boolean":
+      return /^(true|false|1|0)$/i.test(trimmed) ? null : "Use true/false or 1/0";
+    case "SByte":
+    case "Byte":
+    case "Int16":
+    case "UInt16":
+    case "Int32":
+    case "UInt32":
+    case "Int64":
+    case "UInt64":
+      return /^-?\d+$/.test(trimmed) ? null : "Integer required";
+    case "Float":
+    case "Double":
+      return Number.isNaN(Number(trimmed)) ? "Numeric value required" : null;
+    default:
+      return null;
+  }
+}
+
 // ─── Main component ──────────────────────────────────────────────
 
 export const MethodCaller: React.FC = () => {
@@ -114,6 +160,7 @@ export const MethodCaller: React.FC = () => {
 
   // Argument values
   const [argValues, setArgValues] = useState<string[]>([]);
+  const [argErrors, setArgErrors] = useState<string[]>([]);
 
   // Call state
   const [result, setResult] = useState<CallMethodResult | null>(null);
@@ -134,6 +181,7 @@ export const MethodCaller: React.FC = () => {
       setIsDiscovering(true);
       setMethodInfo(null);
       setArgValues([]);
+      setArgErrors([]);
       setResult(null);
       setError(null);
 
@@ -142,15 +190,12 @@ export const MethodCaller: React.FC = () => {
         setMethodInfo(info);
         setDiscoveredForId(id);
         setArgValues(new Array(info.input_arguments.length).fill(""));
+        setArgErrors(new Array(info.input_arguments.length).fill(""));
 
         // Auto-infer parent object if not set
         if (!objectNodeId.trim()) {
-          const parts = id.split(".");
-          if (parts.length > 1) {
-            parts.pop();
-            const inferred = parts.join(".");
-            setObjectNodeId(inferred);
-          }
+          const inferred = inferObjectNodeId(id);
+          if (inferred) setObjectNodeId(inferred);
         }
       } catch (e) {
         toast.error(`Failed to discover method: ${e}`);
@@ -185,6 +230,16 @@ export const MethodCaller: React.FC = () => {
     setIsCalling(true);
     setError(null);
     setResult(null);
+
+    if (methodInfo) {
+      const nextErrors = methodInfo.input_arguments.map((arg, i) => validateArgumentValue(arg, argValues[i] || "") || "");
+      setArgErrors(nextErrors);
+      if (nextErrors.some(Boolean)) {
+        setIsCalling(false);
+        setError("One or more method arguments are invalid.");
+        return;
+      }
+    }
 
     const inputArguments: TypedArgValue[] = methodInfo
       ? methodInfo.input_arguments.map((arg, i) => ({
@@ -320,13 +375,24 @@ export const MethodCaller: React.FC = () => {
                   arg={arg}
                   index={i}
                   value={argValues[i] || ""}
+                  error={argErrors[i] || ""}
                   onChange={(val) => {
                     const next = [...argValues];
                     next[i] = val;
                     setArgValues(next);
+                    if (methodInfo) {
+                      const nextErrs = [...argErrors];
+                      nextErrs[i] = validateArgumentValue(methodInfo.input_arguments[i], val) || "";
+                      setArgErrors(nextErrs);
+                    }
                   }}
                 />
               ))}
+              {argErrors.some(Boolean) && (
+                <div className="text-2xs text-iot-amber pt-2">
+                  Resolve highlighted argument issues before calling the method.
+                </div>
+              )}
             </div>
           </Card>
         )}

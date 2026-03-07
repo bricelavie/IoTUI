@@ -3,25 +3,66 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use log::{debug, info};
 use parking_lot::Mutex as SyncMutex;
 
 use opcua::client::{
-    ClientBuilder, DataChangeCallback, EventCallback, IdentityToken, Session,
+    ClientBuilder, DataChangeCallback, EventCallback, IdentityToken, Session, SessionPollResult,
 };
 use opcua::crypto::SecurityPolicy;
+use opcua::types::argument::Argument;
 use opcua::types::{
     AttributeId, BrowseDescription, BrowseDirection, BrowseResultMask, ContentFilter, DataValue,
-    EventFilter, ExtensionObject, MessageSecurityMode,
+    EventFilter, ExtensionObject, HistoryData, HistoryReadValueId, MessageSecurityMode,
     MonitoredItemCreateRequest as OpcMonitoredItemCreateRequest, MonitoringMode,
-    MonitoringParameters, NodeClassMask, NodeId, ObjectId, ObjectTypeId, QualifiedName,
-    ReadValueId, ReferenceTypeId, SimpleAttributeOperand, StatusCode, TimestampsToReturn,
-    UserTokenPolicy, Variant, WriteValue,
+    MonitoringParameters, NodeClassMask, NodeId, NumericRange, ObjectId, ObjectTypeId,
+    QualifiedName, ReadRawModifiedDetails, ReadValueId, ReferenceTypeId, SimpleAttributeOperand,
+    StatusCode, TimestampsToReturn, UserTokenPolicy, Variant, WriteValue,
 };
 
+use crate::error::{AppError, AppResult};
+
 use super::types::*;
+
+const MAX_BUFFERED_EVENTS: usize = 5_000;
+
+#[derive(Debug, Clone)]
+struct MonitoredItemState {
+    logical_item_id: u32,
+    client_handle: u32,
+    node_id: String,
+    display_name: String,
+    sampling_interval: f64,
+}
+
+#[derive(Debug, Clone)]
+struct SubscriptionBinding {
+    logical_subscription_id: u32,
+}
+
+fn push_bounded<T>(buffer: &mut Vec<T>, value: T) {
+    if buffer.len() >= MAX_BUFFERED_EVENTS {
+        buffer.remove(0);
+    }
+    buffer.push(value);
+}
+
+fn parse_connection_health(event: &SessionPollResult) -> Option<LiveConnectionHealth> {
+    match event {
+        SessionPollResult::BeginConnect | SessionPollResult::ReconnectFailed(_) => {
+            Some(LiveConnectionHealth::Reconnecting)
+        }
+        SessionPollResult::Reconnected(_) => Some(LiveConnectionHealth::Connected),
+        SessionPollResult::ConnectionLost(_) | SessionPollResult::FinishedDisconnect => {
+            Some(LiveConnectionHealth::Disconnected)
+        }
+        _ => None,
+    }
+}
 
 /// Holds state for a single OPC UA connection
 pub struct OpcUaConnection {
@@ -31,27 +72,200 @@ pub struct OpcUaConnection {
     /// Filled by callbacks, drained by poll_subscription
     data_buffers: Arc<SyncMutex<HashMap<u32, Vec<DataChangeEvent>>>>,
     /// Mapping of subscription_id -> Vec<(monitored_item_id, client_handle, node_id, display_name)>
-    monitored_items: HashMap<u32, Vec<(u32, u32, String, String)>>,
+    monitored_items: HashMap<u32, Vec<MonitoredItemState>>,
     /// Mapping of subscription_id -> publishing_interval (f64 ms)
     subscription_intervals: HashMap<u32, f64>,
     /// Event buffer: filled by EventCallback, drained by poll_events
     event_buffer: Arc<SyncMutex<Vec<EventData>>>,
+    /// Indicates whether a connection is currently usable.
+    connected: Arc<AtomicBool>,
+    reconnecting: Arc<AtomicBool>,
+    subscription_bindings: Arc<SyncMutex<HashMap<u32, SubscriptionBinding>>>,
+    next_logical_subscription_id: u32,
+    next_logical_item_id: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveConnectionHealth {
+    Connected,
+    Reconnecting,
+    Disconnected,
 }
 
 impl OpcUaConnection {
+    fn build_data_change_callback(
+        data_buffers: Arc<SyncMutex<HashMap<u32, Vec<DataChangeEvent>>>>,
+        subscription_bindings: Arc<SyncMutex<HashMap<u32, SubscriptionBinding>>>,
+        logical_subscription_id: u32,
+    ) -> DataChangeCallback {
+        DataChangeCallback::new(move |dv, item| {
+            let effective_subscription_id = subscription_bindings
+                .lock()
+                .iter()
+                .find_map(|(server_id, binding)| {
+                    if binding.logical_subscription_id == logical_subscription_id {
+                        Some(*server_id)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(logical_subscription_id);
+            let node_id_str = item.item_to_monitor().node_id.to_string();
+            let display_name = node_id_str.clone();
+            let value_str = dv
+                .value
+                .as_ref()
+                .map(variant_to_string)
+                .unwrap_or_else(|| "null".to_string());
+            let data_type = dv
+                .value
+                .as_ref()
+                .map(variant_type_name)
+                .unwrap_or_else(|| "Unknown".to_string());
+            let status = dv
+                .status
+                .as_ref()
+                .map(|s| format!("{s}"))
+                .unwrap_or_else(|| "Good".to_string());
+
+            let event = DataChangeEvent {
+                subscription_id: effective_subscription_id,
+                monitored_item_id: item.client_handle(),
+                node_id: node_id_str,
+                display_name,
+                value: value_str,
+                data_type,
+                status_code: status,
+                source_timestamp: dv.source_timestamp.as_ref().map(|ts| ts.to_string()),
+                server_timestamp: dv.server_timestamp.as_ref().map(|ts| ts.to_string()),
+            };
+
+            let mut bufs = data_buffers.lock();
+            let buffer = bufs.entry(logical_subscription_id).or_insert_with(Vec::new);
+            push_bounded(buffer, event);
+        })
+    }
+
+    fn sync_rebound_subscriptions(&mut self) {
+        let state = self.session.subscription_state().lock();
+        let existing_ids = state.subscription_ids().unwrap_or_default();
+        if existing_ids.is_empty() {
+            return;
+        }
+
+        let mut bindings = self.subscription_bindings.lock();
+        let mut used_server_ids = HashMap::new();
+        for server_id in existing_ids {
+            if let Some(sub) = state.get(server_id) {
+                used_server_ids.insert(server_id, sub.publishing_interval().as_millis() as f64);
+            }
+        }
+
+        let mut next_bindings = HashMap::new();
+        for (logical_id, interval) in self.subscription_intervals.iter() {
+            let preferred = bindings
+                .iter()
+                .find_map(|(server_id, binding)| {
+                    if binding.logical_subscription_id == *logical_id {
+                        Some(*server_id)
+                    } else {
+                        None
+                    }
+                })
+                .filter(|server_id| used_server_ids.contains_key(server_id));
+
+            let chosen = preferred.or_else(|| {
+                used_server_ids
+                    .iter()
+                    .find_map(|(server_id, publishing_interval)| {
+                        if (*publishing_interval - *interval).abs() < 1.0
+                            && !next_bindings.contains_key(server_id)
+                        {
+                            Some(*server_id)
+                        } else {
+                            None
+                        }
+                    })
+            });
+
+            if let Some(server_id) = chosen {
+                next_bindings.insert(
+                    server_id,
+                    SubscriptionBinding {
+                        logical_subscription_id: *logical_id,
+                    },
+                );
+            }
+        }
+
+        *bindings = next_bindings;
+    }
+
+    fn parse_security_policy(policy: &str) -> AppResult<SecurityPolicy> {
+        SecurityPolicy::from_str(policy).map_err(|_| {
+            AppError::security(format!(
+                "Unsupported security policy '{policy}'. Discover endpoints and select a supported policy."
+            ))
+        })
+    }
+
+    fn parse_security_mode(mode: &str) -> AppResult<MessageSecurityMode> {
+        match mode {
+            "None" => Ok(MessageSecurityMode::None),
+            "Sign" => Ok(MessageSecurityMode::Sign),
+            "SignAndEncrypt" => Ok(MessageSecurityMode::SignAndEncrypt),
+            _ => Err(AppError::security(format!(
+                "Unsupported security mode '{mode}'."
+            ))),
+        }
+    }
+
+    fn validate_security_combo(
+        security_policy: SecurityPolicy,
+        message_security_mode: MessageSecurityMode,
+    ) -> AppResult<()> {
+        if security_policy == SecurityPolicy::None
+            && message_security_mode != MessageSecurityMode::None
+        {
+            return Err(AppError::security(
+                "Security policy 'None' requires security mode 'None'.",
+            ));
+        }
+
+        if security_policy != SecurityPolicy::None
+            && message_security_mode == MessageSecurityMode::None
+        {
+            return Err(AppError::security(
+                "A secure policy requires message security mode 'Sign' or 'SignAndEncrypt'.",
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn session_timeout(config: &ConnectionConfig) -> u32 {
+        config.session_timeout.unwrap_or(60_000).clamp(10_000, 300_000)
+    }
+
     /// Connect to an OPC UA server
-    pub async fn connect(config: &ConnectionConfig) -> Result<Self, String> {
+    pub async fn connect(config: &ConnectionConfig) -> AppResult<Self> {
         info!("Connecting to OPC UA server: {}", config.endpoint_url);
+
+        let security_policy = Self::parse_security_policy(&config.security_policy)?;
+        let message_security_mode = Self::parse_security_mode(&config.security_mode)?;
+        Self::validate_security_combo(security_policy, message_security_mode)?;
 
         let mut client = ClientBuilder::new()
             .application_name("IoTUI")
             .application_uri("urn:iotui:client")
             .product_uri("urn:iotui")
-            .trust_server_certs(true)
+            .trust_server_certs(false)
             .create_sample_keypair(true)
             .session_retry_limit(3)
+            .recreate_subscriptions(true)
+            .session_timeout(Self::session_timeout(config))
             .client()
-            .map_err(|errs| format!("Failed to create OPC UA client: {}", errs.join(", ")))?;
+            .map_err(|errs| AppError::connection(format!("Failed to create OPC UA client: {}", errs.join(", "))))?;
 
         // Determine identity token
         let identity = match config.auth_type {
@@ -59,24 +273,19 @@ impl OpcUaConnection {
             AuthType::UsernamePassword => {
                 let user = config.username.clone().unwrap_or_default();
                 let pass = config.password.clone().unwrap_or_default();
+                if user.trim().is_empty() {
+                    return Err(AppError::invalid_argument(
+                        "Username/password authentication requires a username.",
+                    ));
+                }
                 IdentityToken::new_user_name(user, pass)
             }
             AuthType::Certificate => {
                 // Certificate auth not yet supported in this integration
-                return Err("Certificate authentication is not yet supported for live connections. Use Anonymous or Username/Password.".to_string());
+                return Err(AppError::security(
+                    "Certificate authentication is not yet supported for live connections. Use Anonymous or Username/Password.",
+                ));
             }
-        };
-
-        // Parse security policy
-        let security_policy = SecurityPolicy::from_str(&config.security_policy)
-            .unwrap_or(SecurityPolicy::None);
-
-        // Parse message security mode
-        let message_security_mode = match config.security_mode.as_str() {
-            "None" => MessageSecurityMode::None,
-            "Sign" => MessageSecurityMode::Sign,
-            "SignAndEncrypt" => MessageSecurityMode::SignAndEncrypt,
-            _ => MessageSecurityMode::None,
         };
 
         // Determine user token policy based on auth type
@@ -109,9 +318,48 @@ impl OpcUaConnection {
                 identity,
             )
             .await
-            .map_err(|e| format!("Failed to connect: {e}"))?;
+            .map_err(|e| AppError::connection(format!("Failed to connect: {e}")))?;
 
-        let handle = event_loop.spawn();
+        let connected_flag = Arc::new(AtomicBool::new(false));
+        let reconnecting_flag = Arc::new(AtomicBool::new(false));
+        let subscription_bindings = Arc::new(SyncMutex::new(HashMap::new()));
+        let connected_for_loop = connected_flag.clone();
+        let reconnecting_for_loop = reconnecting_flag.clone();
+        let data_buffers_runtime = Arc::new(SyncMutex::new(HashMap::new()));
+        let event_loop_handle = tokio::spawn(async move {
+            let stream = event_loop.enter();
+            tokio::pin!(stream);
+            let mut final_status = StatusCode::Good;
+
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(event) => {
+                        debug!("Session event: {:?}", event);
+                        if let Some(health) = parse_connection_health(&event) {
+                            reconnecting_for_loop.store(
+                                matches!(health, LiveConnectionHealth::Reconnecting),
+                                Ordering::Relaxed,
+                            );
+                            connected_for_loop.store(
+                                matches!(health, LiveConnectionHealth::Connected),
+                                Ordering::Relaxed,
+                            );
+                        }
+                        if matches!(event, SessionPollResult::Reconnected(_)) {
+                            reconnecting_for_loop.store(false, Ordering::Relaxed);
+                        }
+                    }
+                    Err(code) => {
+                        connected_for_loop.store(false, Ordering::Relaxed);
+                        reconnecting_for_loop.store(false, Ordering::Relaxed);
+                        final_status = code;
+                        break;
+                    }
+                }
+            }
+
+            final_status
+        });
 
         // Wait for connection with timeout
         let wait_session = session.clone();
@@ -121,9 +369,10 @@ impl OpcUaConnection {
         .await;
 
         if connected.is_err() {
-            handle.abort();
-            return Err("Connection timed out after 10 seconds".to_string());
+            event_loop_handle.abort();
+            return Err(AppError::connection("Connection timed out after 10 seconds"));
         }
+        connected_flag.store(true, Ordering::Relaxed);
 
         info!(
             "Successfully connected to OPC UA server: {}",
@@ -132,11 +381,16 @@ impl OpcUaConnection {
 
         let conn = Self {
             session,
-            event_loop_handle: handle,
-            data_buffers: Arc::new(SyncMutex::new(HashMap::new())),
+            event_loop_handle,
+            data_buffers: data_buffers_runtime,
             monitored_items: HashMap::new(),
             subscription_intervals: HashMap::new(),
             event_buffer: Arc::new(SyncMutex::new(Vec::new())),
+            connected: connected_flag,
+            reconnecting: reconnecting_flag,
+            subscription_bindings,
+            next_logical_subscription_id: 1,
+            next_logical_item_id: 1,
         };
 
         // Auto-subscribe to events (best-effort; don't fail the connection if this fails)
@@ -149,38 +403,41 @@ impl OpcUaConnection {
     }
 
     /// Disconnect from the server
-    pub async fn disconnect(&self) -> Result<(), String> {
+    pub async fn disconnect(&self) -> AppResult<()> {
         info!("Disconnecting from OPC UA server");
         self.session
             .disconnect()
             .await
-            .map_err(|e| format!("Disconnect failed: {e}"))?;
+            .map_err(|e| AppError::connection(format!("Disconnect failed: {e}")))?;
+        self.connected.store(false, Ordering::Relaxed);
+        self.reconnecting.store(false, Ordering::Relaxed);
         self.event_loop_handle.abort();
         Ok(())
     }
 
     /// Discover endpoints from a URL
-    pub async fn discover_endpoints(url: &str) -> Result<Vec<EndpointInfo>, String> {
+    pub async fn discover_endpoints(url: &str) -> AppResult<Vec<EndpointInfo>> {
         info!("Discovering endpoints at: {}", url);
 
-        let mut client = ClientBuilder::new()
+        let client = ClientBuilder::new()
             .application_name("IoTUI Discovery")
             .application_uri("urn:iotui:discovery")
-            .trust_server_certs(true)
+            .trust_server_certs(false)
             .create_sample_keypair(true)
             .client()
-            .map_err(|errs| format!("Failed to create discovery client: {}", errs.join(", ")))?;
+            .map_err(|errs| AppError::connection(format!("Failed to create discovery client: {}", errs.join(", "))))?;
 
         let endpoints = client
             .get_server_endpoints_from_url(url)
             .await
-            .map_err(|e| format!("Failed to discover endpoints: {e}"))?;
+            .map_err(|e| AppError::connection(format!("Failed to discover endpoints: {e}")))?;
 
         Ok(endpoints
             .iter()
             .map(|ep| {
-                let security_policy =
-                    SecurityPolicy::from_str(ep.security_policy_uri.as_ref()).unwrap_or(SecurityPolicy::None);
+                let security_policy = SecurityPolicy::from_str(ep.security_policy_uri.as_ref())
+                    .map(|policy| policy.to_str().to_string())
+                    .unwrap_or_else(|_| ep.security_policy_uri.as_ref().to_string());
 
                 let security_mode = match ep.security_mode {
                     MessageSecurityMode::None => "None".to_string(),
@@ -205,7 +462,7 @@ impl OpcUaConnection {
 
                 EndpointInfo {
                     url: ep.endpoint_url.to_string(),
-                    security_policy: security_policy.to_str().to_string(),
+                    security_policy,
                     security_mode,
                     user_identity_tokens: tokens,
                 }
@@ -214,9 +471,9 @@ impl OpcUaConnection {
     }
 
     /// Browse child nodes of a given node
-    pub async fn browse(&self, node_id_str: &str) -> Result<Vec<BrowseNode>, String> {
+    pub async fn browse(&self, node_id_str: &str) -> AppResult<Vec<BrowseNode>> {
         let node_id =
-            NodeId::from_str(node_id_str).map_err(|e| format!("Invalid node ID: {e}"))?;
+            NodeId::from_str(node_id_str).map_err(|e| AppError::invalid_argument(format!("Invalid node ID: {e}")))?;
 
         let browse_desc = BrowseDescription {
             node_id,
@@ -231,7 +488,7 @@ impl OpcUaConnection {
             .session
             .browse(&[browse_desc], 0, None)
             .await
-            .map_err(|e| format!("Browse failed: {e}"))?;
+            .map_err(|e| AppError::opcua(format!("Browse failed: {e}")))?;
 
         if results.is_empty() {
             return Ok(vec![]);
@@ -249,7 +506,10 @@ impl OpcUaConnection {
                         // A node has children if it's an Object or a View
                         let has_children = matches!(
                             r.node_class,
-                            opcua::types::NodeClass::Object | opcua::types::NodeClass::View
+                            opcua::types::NodeClass::Object
+                                | opcua::types::NodeClass::View
+                                | opcua::types::NodeClass::Variable
+                                | opcua::types::NodeClass::Method
                         );
 
                         BrowseNode {
@@ -273,9 +533,9 @@ impl OpcUaConnection {
     }
 
     /// Read detailed attributes of a node
-    pub async fn read_node_details(&self, node_id_str: &str) -> Result<NodeDetails, String> {
+    pub async fn read_node_details(&self, node_id_str: &str) -> AppResult<NodeDetails> {
         let node_id =
-            NodeId::from_str(node_id_str).map_err(|e| format!("Invalid node ID: {e}"))?;
+            NodeId::from_str(node_id_str).map_err(|e| AppError::invalid_argument(format!("Invalid node ID: {e}")))?;
 
         // Read multiple attributes at once
         let attributes_to_read = vec![
@@ -306,7 +566,7 @@ impl OpcUaConnection {
             .session
             .read(&read_value_ids, TimestampsToReturn::Both, 0.0)
             .await
-            .map_err(|e| format!("Read failed: {e}"))?;
+            .map_err(|e| AppError::opcua(format!("Read failed: {e}")))?;
 
         // Parse results
         let get_val = |idx: usize| -> Option<&DataValue> { results.get(idx) };
@@ -441,9 +701,9 @@ impl OpcUaConnection {
     }
 
     /// Get references for a node (used by read_node_details)
-    async fn get_references(&self, node_id_str: &str) -> Result<Vec<ReferenceInfo>, String> {
+    async fn get_references(&self, node_id_str: &str) -> AppResult<Vec<ReferenceInfo>> {
         let node_id =
-            NodeId::from_str(node_id_str).map_err(|e| format!("Invalid node ID: {e}"))?;
+            NodeId::from_str(node_id_str).map_err(|e| AppError::invalid_argument(format!("Invalid node ID: {e}")))?;
 
         let browse_desc = BrowseDescription {
             node_id,
@@ -458,7 +718,7 @@ impl OpcUaConnection {
             .session
             .browse(&[browse_desc], 0, None)
             .await
-            .map_err(|e| format!("Browse references failed: {e}"))?;
+            .map_err(|e| AppError::opcua(format!("Browse references failed: {e}")))?;
 
         if results.is_empty() {
             return Ok(vec![]);
@@ -485,55 +745,53 @@ impl OpcUaConnection {
     }
 
     /// Read values of multiple nodes
-    pub async fn read_values(&self, node_ids: &[String]) -> Result<Vec<ReadResult>, String> {
-        let read_value_ids: Vec<ReadValueId> = node_ids
-            .iter()
-            .filter_map(|id| {
-                NodeId::from_str(id).ok().map(|node_id| ReadValueId {
-                    node_id,
-                    attribute_id: AttributeId::Value as u32,
-                    ..Default::default()
-                })
-            })
-            .collect();
+    pub async fn read_values(&self, node_ids: &[String]) -> AppResult<Vec<ReadResult>> {
+        let mut parsed = Vec::with_capacity(node_ids.len());
+        for id in node_ids {
+            let node_id = NodeId::from_str(id)
+                .map_err(|e| AppError::invalid_argument(format!("Invalid node ID '{id}': {e}")))?;
+            parsed.push((id.clone(), ReadValueId {
+                node_id,
+                attribute_id: AttributeId::Value as u32,
+                ..Default::default()
+            }));
+        }
 
-        if read_value_ids.is_empty() {
+        if parsed.is_empty() {
             return Ok(vec![]);
         }
 
+        let request: Vec<ReadValueId> = parsed.iter().map(|(_, read)| read.clone()).collect();
         let results = self
             .session
-            .read(&read_value_ids, TimestampsToReturn::Both, 0.0)
+            .read(&request, TimestampsToReturn::Both, 0.0)
             .await
-            .map_err(|e| format!("Read failed: {e}"))?;
+            .map_err(|e| AppError::opcua(format!("Read failed: {e}")))?;
 
         Ok(results
-            .iter()
-            .enumerate()
-            .map(|(i, dv)| {
-                let node_id = node_ids.get(i).cloned().unwrap_or_default();
-                ReadResult {
-                    node_id,
-                    value: dv.value.as_ref().map(variant_to_string),
-                    data_type: dv.value.as_ref().map(variant_type_name),
-                    status_code: dv
-                        .status
-                        .as_ref()
-                        .map(|s| format!("{s}"))
-                        .unwrap_or_else(|| "Good".to_string()),
-                    server_timestamp: dv.server_timestamp.as_ref().map(|ts| ts.to_string()),
-                    source_timestamp: dv.source_timestamp.as_ref().map(|ts| ts.to_string()),
-                }
+            .into_iter()
+            .zip(parsed.into_iter())
+            .map(|(dv, (node_id, _))| ReadResult {
+                node_id,
+                value: dv.value.as_ref().map(variant_to_string),
+                data_type: dv.value.as_ref().map(variant_type_name),
+                status_code: dv
+                    .status
+                    .as_ref()
+                    .map(|s| format!("{s}"))
+                    .unwrap_or_else(|| "Good".to_string()),
+                server_timestamp: dv.server_timestamp.as_ref().map(|ts| ts.to_string()),
+                source_timestamp: dv.source_timestamp.as_ref().map(|ts| ts.to_string()),
             })
             .collect())
     }
 
     /// Write a value to a node
-    pub async fn write_value(&self, request: &WriteRequest) -> Result<WriteResult, String> {
+    pub async fn write_value(&self, request: &WriteRequest) -> AppResult<WriteResult> {
         let node_id =
-            NodeId::from_str(&request.node_id).map_err(|e| format!("Invalid node ID: {e}"))?;
+            NodeId::from_str(&request.node_id).map_err(|e| AppError::invalid_argument(format!("Invalid node ID: {e}")))?;
 
-        let variant = string_to_variant(&request.value, &request.data_type);
+        let variant = string_to_variant(&request.value, &request.data_type)?;
         let write_value = WriteValue {
             node_id: node_id.clone(),
             attribute_id: AttributeId::Value as u32,
@@ -545,7 +803,7 @@ impl OpcUaConnection {
             .session
             .write(&[write_value])
             .await
-            .map_err(|e| format!("Write failed: {e}"))?;
+            .map_err(|e| AppError::opcua(format!("Write failed: {e}")))?;
 
         let status = results
             .first()
@@ -559,14 +817,85 @@ impl OpcUaConnection {
         })
     }
 
+    pub async fn read_history(&self, request: &HistoryReadRequest) -> AppResult<HistoryReadResult> {
+        let node_id = NodeId::from_str(&request.node_id)
+            .map_err(|e| AppError::invalid_argument(format!("Invalid node ID: {e}")))?;
+
+        let start_time = request
+            .start_time
+            .as_deref()
+            .map(parse_history_time)
+            .transpose()?;
+        let end_time = request
+            .end_time
+            .as_deref()
+            .map(parse_history_time)
+            .transpose()?;
+
+        let details = ReadRawModifiedDetails {
+            is_read_modified: false,
+            start_time: start_time.unwrap_or_default(),
+            end_time: end_time.unwrap_or_default(),
+            num_values_per_node: request.max_values.unwrap_or(200).clamp(1, 10_000),
+            return_bounds: true,
+        };
+
+        let nodes_to_read = [HistoryReadValueId {
+            node_id,
+            index_range: NumericRange::None,
+            data_encoding: QualifiedName::null(),
+            continuation_point: Default::default(),
+        }];
+
+        let result = self
+            .session
+            .history_read(
+                opcua::client::HistoryReadAction::ReadRawModifiedDetails(details),
+                TimestampsToReturn::Both,
+                false,
+                &nodes_to_read,
+            )
+            .await
+            .map_err(|e| AppError::opcua(format!("HistoryRead failed: {e}")))?;
+
+        let first = result
+            .first()
+            .ok_or_else(|| AppError::opcua("HistoryRead returned no results"))?;
+
+        let values = first
+            .history_data
+            .inner_as::<HistoryData>()
+            .and_then(|history| history.data_values.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|dv| HistoryValue {
+                value: dv.value.as_ref().map(variant_to_string),
+                data_type: dv.value.as_ref().map(variant_type_name),
+                status_code: dv
+                    .status
+                    .as_ref()
+                    .map(|s| format!("{s}"))
+                    .unwrap_or_else(|| "Good".to_string()),
+                source_timestamp: dv.source_timestamp.as_ref().map(|ts| ts.to_string()),
+                server_timestamp: dv.server_timestamp.as_ref().map(|ts| ts.to_string()),
+            })
+            .collect();
+
+        Ok(HistoryReadResult {
+            node_id: request.node_id.clone(),
+            values,
+            continuation_point: continuation_point_to_string(&first.continuation_point),
+        })
+    }
+
     /// Create a subscription on the server
     pub async fn create_subscription(
         &mut self,
         request: &CreateSubscriptionRequest,
-    ) -> Result<CreateSubscriptionResult, String> {
-        let buffers = self.data_buffers.clone();
-
-        let subscription_id = self
+    ) -> AppResult<CreateSubscriptionResult> {
+        let logical_subscription_id = self.next_logical_subscription_id;
+        self.next_logical_subscription_id += 1;
+        let server_subscription_id = self
             .session
             .create_subscription(
                 Duration::from_millis(request.publishing_interval as u64),
@@ -575,66 +904,34 @@ impl OpcUaConnection {
                 request.max_notifications_per_publish,
                 request.priority,
                 request.publishing_enabled,
-                DataChangeCallback::new(move |dv, item| {
-                    let node_id_str = item.item_to_monitor().node_id.to_string();
-                    let display_name = node_id_str.clone(); // Will be enriched later
-                    let value_str = dv
-                        .value
-                        .as_ref()
-                        .map(variant_to_string)
-                        .unwrap_or_else(|| "null".to_string());
-                    let data_type = dv
-                        .value
-                        .as_ref()
-                        .map(variant_type_name)
-                        .unwrap_or_else(|| "Unknown".to_string());
-                    let status = dv
-                        .status
-                        .as_ref()
-                        .map(|s| format!("{s}"))
-                        .unwrap_or_else(|| "Good".to_string());
-                    let server_ts = dv.server_timestamp.as_ref().map(|ts| ts.to_string());
-                    let source_ts = dv.source_timestamp.as_ref().map(|ts| ts.to_string());
-
-                    let client_handle = item.client_handle();
-                    debug!(
-                        "DataChangeCallback: client_handle={}, node_id={}, value={}",
-                        client_handle, node_id_str, value_str
-                    );
-
-                    let event = DataChangeEvent {
-                        subscription_id: 0, // Will be set during poll
-                        monitored_item_id: client_handle,
-                        node_id: node_id_str,
-                        display_name,
-                        value: value_str,
-                        data_type,
-                        status_code: status,
-                        source_timestamp: source_ts,
-                        server_timestamp: server_ts,
-                    };
-
-                    // Store in buffer for all subscriptions (we'll filter by item later)
-                    let mut bufs = buffers.lock();
-                    bufs.entry(0).or_insert_with(Vec::new).push(event);
-                }),
+                Self::build_data_change_callback(
+                    self.data_buffers.clone(),
+                    self.subscription_bindings.clone(),
+                    logical_subscription_id,
+                ),
             )
             .await
-            .map_err(|e| format!("Create subscription failed: {e}"))?;
+            .map_err(|e| AppError::opcua(format!("Create subscription failed: {e}")))?;
 
         // Initialize buffer for this subscription
         self.data_buffers
             .lock()
-            .entry(subscription_id)
+            .entry(logical_subscription_id)
             .or_insert_with(Vec::new);
         self.monitored_items
-            .entry(subscription_id)
+            .entry(logical_subscription_id)
             .or_insert_with(Vec::new);
         self.subscription_intervals
-            .insert(subscription_id, request.publishing_interval);
+            .insert(logical_subscription_id, request.publishing_interval);
+        self.subscription_bindings.lock().insert(
+            server_subscription_id,
+            SubscriptionBinding {
+                logical_subscription_id,
+            },
+        );
 
         Ok(CreateSubscriptionResult {
-            subscription_id,
+            subscription_id: logical_subscription_id,
             revised_publishing_interval: request.publishing_interval,
             revised_lifetime_count: request.lifetime_count,
             revised_max_keep_alive_count: request.max_keep_alive_count,
@@ -642,14 +939,28 @@ impl OpcUaConnection {
     }
 
     /// Delete a subscription
-    pub async fn delete_subscription(&mut self, subscription_id: u32) -> Result<(), String> {
+    pub async fn delete_subscription(&mut self, subscription_id: u32) -> AppResult<()> {
+        self.sync_rebound_subscriptions();
+        let server_subscription_id = self
+            .subscription_bindings
+            .lock()
+            .iter()
+            .find_map(|(server_id, binding)| {
+                if binding.logical_subscription_id == subscription_id {
+                    Some(*server_id)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(subscription_id);
         self.session
-            .delete_subscription(subscription_id)
+            .delete_subscription(server_subscription_id)
             .await
-            .map_err(|e| format!("Delete subscription failed: {e}"))?;
+            .map_err(|e| AppError::opcua(format!("Delete subscription failed: {e}")))?;
         self.data_buffers.lock().remove(&subscription_id);
         self.monitored_items.remove(&subscription_id);
         self.subscription_intervals.remove(&subscription_id);
+        self.subscription_bindings.lock().remove(&server_subscription_id);
         Ok(())
     }
 
@@ -658,33 +969,48 @@ impl OpcUaConnection {
         &mut self,
         subscription_id: u32,
         items: &[MonitoredItemRequest],
-    ) -> Result<Vec<u32>, String> {
-        let items_to_create: Vec<OpcMonitoredItemCreateRequest> = items
-            .iter()
-            .filter_map(|item| {
-                NodeId::from_str(&item.node_id).ok().map(|node_id| {
-                    let mut req: OpcMonitoredItemCreateRequest = node_id.into();
-                    req.requested_parameters.sampling_interval = item.sampling_interval;
-                    req.requested_parameters.queue_size = item.queue_size;
-                    req.requested_parameters.discard_oldest = item.discard_oldest;
-                    req
-                })
-            })
-            .collect();
+    ) -> AppResult<Vec<u32>> {
+        self.sync_rebound_subscriptions();
+        let mut parsed_items = Vec::with_capacity(items.len());
+        let mut items_to_create = Vec::with_capacity(items.len());
+        for item in items {
+            let node_id = NodeId::from_str(&item.node_id).map_err(|e| {
+                AppError::invalid_argument(format!("Invalid monitored item node ID '{}': {e}", item.node_id))
+            })?;
+            let mut req: OpcMonitoredItemCreateRequest = node_id.into();
+            req.requested_parameters.sampling_interval = item.sampling_interval;
+            req.requested_parameters.queue_size = item.queue_size;
+            req.requested_parameters.discard_oldest = item.discard_oldest;
+            items_to_create.push(req);
+            parsed_items.push(item.clone());
+        }
 
         // NOTE: Do NOT capture client_handles before sending. The SDK's
         // create_monitored_items() replaces client_handle == 0 with auto-incremented
         // values internally. We must extract the actual client_handle from the response.
 
+        let server_subscription_id = self
+            .subscription_bindings
+            .lock()
+            .iter()
+            .find_map(|(server_id, binding)| {
+                if binding.logical_subscription_id == subscription_id {
+                    Some(*server_id)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(subscription_id);
+
         let results = self
             .session
             .create_monitored_items(
-                subscription_id,
+                server_subscription_id,
                 TimestampsToReturn::Both,
                 items_to_create,
             )
             .await
-            .map_err(|e| format!("Add monitored items failed: {e}"))?;
+            .map_err(|e| AppError::opcua(format!("Add monitored items failed: {e}")))?;
 
         let mut ids = Vec::new();
         let monitored_list = self
@@ -698,11 +1024,11 @@ impl OpcUaConnection {
             // This is the handle the SDK actually sent to the server and that
             // the DataChangeCallback will receive via item.client_handle().
             let client_handle = result.requested_parameters.client_handle;
-            let node_id = items
+            let node_id = parsed_items
                 .get(i)
                 .map(|it| it.node_id.clone())
                 .unwrap_or_default();
-            let display_name = items
+            let display_name = parsed_items
                 .get(i)
                 .and_then(|it| it.display_name.clone())
                 .unwrap_or_else(|| node_id.clone());
@@ -710,8 +1036,18 @@ impl OpcUaConnection {
                 "Monitored item created: item_id={}, client_handle={}, node_id={}, display_name={}",
                 item_id, client_handle, node_id, display_name
             );
-            monitored_list.push((item_id, client_handle, node_id, display_name));
-            ids.push(item_id);
+            monitored_list.push(MonitoredItemState {
+                logical_item_id: self.next_logical_item_id,
+                client_handle,
+                node_id,
+                display_name,
+                sampling_interval: parsed_items
+                    .get(i)
+                    .map(|it| it.sampling_interval)
+                    .unwrap_or_default(),
+            });
+            ids.push(self.next_logical_item_id);
+            self.next_logical_item_id += 1;
         }
 
         Ok(ids)
@@ -722,76 +1058,85 @@ impl OpcUaConnection {
         &mut self,
         subscription_id: u32,
         item_ids: &[u32],
-    ) -> Result<(), String> {
+    ) -> AppResult<()> {
+        self.sync_rebound_subscriptions();
+        let server_subscription_id = self
+            .subscription_bindings
+            .lock()
+            .iter()
+            .find_map(|(server_id, binding)| {
+                if binding.logical_subscription_id == subscription_id {
+                    Some(*server_id)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(subscription_id);
+        let client_handles = self
+            .monitored_items
+            .get(&subscription_id)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|item| item_ids.contains(&item.logical_item_id))
+                    .map(|item| item.client_handle)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let server_item_ids = {
+            let state = self.session.subscription_state().lock();
+            state
+                .get(server_subscription_id)
+                .map(|subscription| {
+                    subscription
+                        .monitored_items()
+                        .filter(|item| client_handles.contains(&item.client_handle()))
+                        .map(|item| item.id())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
         self.session
-            .delete_monitored_items(subscription_id, item_ids)
+            .delete_monitored_items(server_subscription_id, &server_item_ids)
             .await
-            .map_err(|e| format!("Remove monitored items failed: {e}"))?;
+            .map_err(|e| AppError::opcua(format!("Remove monitored items failed: {e}")))?;
 
         if let Some(items) = self.monitored_items.get_mut(&subscription_id) {
-            items.retain(|(id, _, _, _)| !item_ids.contains(id));
+            items.retain(|item| !item_ids.contains(&item.logical_item_id));
         }
         Ok(())
     }
 
     /// Poll subscription for data changes
     /// The async-opcua crate uses callbacks, so we drain the buffer that callbacks fill
-    pub fn poll_subscription(&self, subscription_id: u32) -> Result<Vec<DataChangeEvent>, String> {
+    pub fn poll_subscription(&self, subscription_id: u32) -> AppResult<Vec<DataChangeEvent>> {
         let mut bufs = self.data_buffers.lock();
+        let mut events = bufs.remove(&subscription_id).unwrap_or_default();
 
-        // Get items for this subscription to know which client_handles belong to it
-        let sub_items = self
-            .monitored_items
-            .get(&subscription_id)
-            .cloned()
-            .unwrap_or_default();
-        // Build set of client_handles (what the callback uses as monitored_item_id)
-        let sub_client_handles: std::collections::HashSet<u32> =
-            sub_items.iter().map(|(_, ch, _, _)| *ch).collect();
-
-        // Drain the global callback buffer (key=0) and filter for this subscription
-        let mut events = Vec::new();
-        if let Some(global_buf) = bufs.get_mut(&0) {
-            if !global_buf.is_empty() {
-                debug!(
-                    "poll_subscription({}): {} events in global buffer, looking for client_handles {:?}",
-                    subscription_id,
-                    global_buf.len(),
-                    sub_client_handles
-                );
-            }
-            let mut remaining = Vec::new();
-            for mut event in global_buf.drain(..) {
-                if sub_client_handles.contains(&event.monitored_item_id) {
-                    event.subscription_id = subscription_id;
-                    // Enrich display_name from our stored mapping
-                    if let Some((_, _, _, display)) = sub_items
-                        .iter()
-                        .find(|(_, ch, _, _)| *ch == event.monitored_item_id)
-                    {
-                        event.display_name = display.clone();
-                    }
-                    events.push(event);
-                } else {
-                    remaining.push(event);
+        if let Some(sub_items) = self.monitored_items.get(&subscription_id) {
+            for event in &mut events {
+                if let Some(item) = sub_items
+                    .iter()
+                    .find(|item| item.client_handle == event.monitored_item_id)
+                {
+                    event.monitored_item_id = item.logical_item_id;
+                    event.display_name = item.display_name.clone();
+                    event.node_id = item.node_id.clone();
                 }
             }
-            *global_buf = remaining;
         }
 
-        if !events.is_empty() {
-            debug!(
-                "poll_subscription({}): returning {} events",
-                subscription_id,
-                events.len()
-            );
-        }
-
+        bufs.entry(subscription_id).or_insert_with(Vec::new);
         Ok(events)
     }
 
+    pub fn sync_subscription_bindings(&mut self) {
+        self.sync_rebound_subscriptions();
+    }
+
     /// Get subscription info
-    pub fn get_subscriptions(&self) -> Vec<SubscriptionInfo> {
+    pub fn get_subscriptions(&mut self) -> Vec<SubscriptionInfo> {
+        self.sync_rebound_subscriptions();
         self.monitored_items
             .iter()
             .map(|(sub_id, items)| {
@@ -805,11 +1150,11 @@ impl OpcUaConnection {
                     publishing_interval,
                     monitored_items: items
                         .iter()
-                        .map(|(item_id, _, node_id, display_name)| MonitoredItemInfo {
-                            id: *item_id,
-                            node_id: node_id.clone(),
-                            display_name: display_name.clone(),
-                            sampling_interval: publishing_interval,
+                        .map(|item| MonitoredItemInfo {
+                            id: item.logical_item_id,
+                            node_id: item.node_id.clone(),
+                            display_name: item.display_name.clone(),
+                            sampling_interval: item.sampling_interval,
                         })
                         .collect(),
                 }
@@ -821,17 +1166,17 @@ impl OpcUaConnection {
     pub async fn call_method(
         &self,
         request: &CallMethodRequest,
-    ) -> Result<CallMethodResult, String> {
+    ) -> AppResult<CallMethodResult> {
         let object_id = NodeId::from_str(&request.object_node_id)
-            .map_err(|e| format!("Invalid object node ID: {e}"))?;
+            .map_err(|e| AppError::invalid_argument(format!("Invalid object node ID: {e}")))?;
         let method_id = NodeId::from_str(&request.method_node_id)
-            .map_err(|e| format!("Invalid method node ID: {e}"))?;
+            .map_err(|e| AppError::invalid_argument(format!("Invalid method node ID: {e}")))?;
 
         let input_args: Vec<Variant> = request
             .input_arguments
             .iter()
             .map(|arg| string_to_variant(&arg.value, &arg.data_type))
-            .collect();
+            .collect::<AppResult<Vec<_>>>()?;
 
         let input_args_opt = if input_args.is_empty() {
             None
@@ -843,7 +1188,7 @@ impl OpcUaConnection {
             .session
             .call_one((object_id, method_id, input_args_opt))
             .await
-            .map_err(|e| format!("Method call failed: {e}"))?;
+            .map_err(|e| AppError::opcua(format!("Method call failed: {e}")))?;
 
         let output_args: Vec<String> = result
             .output_arguments
@@ -861,9 +1206,9 @@ impl OpcUaConnection {
     pub async fn get_method_info(
         &self,
         method_node_id: &str,
-    ) -> Result<MethodInfo, String> {
+    ) -> AppResult<MethodInfo> {
         let node_id = NodeId::from_str(method_node_id)
-            .map_err(|e| format!("Invalid method node ID: {e}"))?;
+            .map_err(|e| AppError::invalid_argument(format!("Invalid method node ID: {e}")))?;
 
         // Read DisplayName and BrowseName of the method node itself
         let attrs_to_read: Vec<ReadValueId> = [
@@ -883,7 +1228,7 @@ impl OpcUaConnection {
             .session
             .read(&attrs_to_read, TimestampsToReturn::Neither, 0.0)
             .await
-            .map_err(|e| format!("Failed to read method attributes: {e}"))?;
+            .map_err(|e| AppError::opcua(format!("Failed to read method attributes: {e}")))?;
 
         let browse_name = attr_results
             .first()
@@ -920,7 +1265,7 @@ impl OpcUaConnection {
             .session
             .browse(&[browse_desc], 0, None)
             .await
-            .map_err(|e| format!("Browse method properties failed: {e}"))?;
+            .map_err(|e| AppError::opcua(format!("Browse method properties failed: {e}")))?;
 
         let refs = results
             .first()
@@ -975,7 +1320,7 @@ impl OpcUaConnection {
 
     /// Subscribe to OPC UA events on the Server object.
     /// Creates a subscription with an EventCallback that monitors the Server node's EventNotifier attribute.
-    pub async fn subscribe_to_events(&self) -> Result<(), String> {
+    pub async fn subscribe_to_events(&self) -> AppResult<()> {
         let event_buf = self.event_buffer.clone();
 
         // Build select clauses for BaseEventType fields
@@ -1106,7 +1451,7 @@ impl OpcUaConnection {
                 }),
             )
             .await
-            .map_err(|e| format!("Failed to create event subscription: {e}"))?;
+            .map_err(|e| AppError::opcua(format!("Failed to create event subscription: {e}")))?;
 
         info!("Created event subscription with id={}", sub_id);
 
@@ -1132,7 +1477,7 @@ impl OpcUaConnection {
             .session
             .create_monitored_items(sub_id, TimestampsToReturn::Both, vec![event_monitor_request])
             .await
-            .map_err(|e| format!("Failed to create event monitored item: {e}"))?;
+            .map_err(|e| AppError::opcua(format!("Failed to create event monitored item: {e}")))?;
 
         if let Some(result) = results.first() {
             if result.result.status_code.is_good() {
@@ -1152,6 +1497,20 @@ impl OpcUaConnection {
     pub fn poll_events(&self) -> Vec<EventData> {
         let mut buf = self.event_buffer.lock();
         buf.drain(..).collect()
+    }
+
+    pub async fn health(&self) -> LiveConnectionHealth {
+        if self.connected.load(Ordering::Relaxed) {
+            if self.reconnecting.load(Ordering::Relaxed) {
+                LiveConnectionHealth::Reconnecting
+            } else {
+                LiveConnectionHealth::Connected
+            }
+        } else if self.reconnecting.load(Ordering::Relaxed) {
+            LiveConnectionHealth::Reconnecting
+        } else {
+            LiveConnectionHealth::Disconnected
+        }
     }
 }
 
@@ -1214,20 +1573,60 @@ fn variant_type_name(v: &Variant) -> String {
 }
 
 /// Convert a string value and type name back to a Variant for writing
-fn string_to_variant(value: &str, data_type: &str) -> Variant {
+fn string_to_variant(value: &str, data_type: &str) -> AppResult<Variant> {
+    fn parse_err(data_type: &str, value: &str) -> AppError {
+        AppError::invalid_argument(format!(
+            "Value '{value}' is not a valid {data_type}."
+        ))
+    }
+
     match data_type {
-        "Boolean" | "boolean" => Variant::Boolean(value.parse().unwrap_or(false)),
-        "SByte" | "sbyte" => Variant::SByte(value.parse().unwrap_or(0)),
-        "Byte" | "byte" => Variant::Byte(value.parse().unwrap_or(0)),
-        "Int16" | "int16" => Variant::Int16(value.parse().unwrap_or(0)),
-        "UInt16" | "uint16" => Variant::UInt16(value.parse().unwrap_or(0)),
-        "Int32" | "int32" => Variant::Int32(value.parse().unwrap_or(0)),
-        "UInt32" | "uint32" => Variant::UInt32(value.parse().unwrap_or(0)),
-        "Int64" | "int64" => Variant::Int64(value.parse().unwrap_or(0)),
-        "UInt64" | "uint64" => Variant::UInt64(value.parse().unwrap_or(0)),
-        "Float" | "float" => Variant::Float(value.parse().unwrap_or(0.0)),
-        "Double" | "double" => Variant::Double(value.parse().unwrap_or(0.0)),
-        _ => Variant::String(opcua::types::UAString::from(value)),
+        "Boolean" | "boolean" => match value.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" => Ok(Variant::Boolean(true)),
+            "false" | "0" => Ok(Variant::Boolean(false)),
+            _ => Err(parse_err(data_type, value)),
+        },
+        "SByte" | "sbyte" => value
+            .parse()
+            .map(Variant::SByte)
+            .map_err(|_| parse_err(data_type, value)),
+        "Byte" | "byte" => value
+            .parse()
+            .map(Variant::Byte)
+            .map_err(|_| parse_err(data_type, value)),
+        "Int16" | "int16" => value
+            .parse()
+            .map(Variant::Int16)
+            .map_err(|_| parse_err(data_type, value)),
+        "UInt16" | "uint16" => value
+            .parse()
+            .map(Variant::UInt16)
+            .map_err(|_| parse_err(data_type, value)),
+        "Int32" | "int32" => value
+            .parse()
+            .map(Variant::Int32)
+            .map_err(|_| parse_err(data_type, value)),
+        "UInt32" | "uint32" => value
+            .parse()
+            .map(Variant::UInt32)
+            .map_err(|_| parse_err(data_type, value)),
+        "Int64" | "int64" => value
+            .parse()
+            .map(Variant::Int64)
+            .map_err(|_| parse_err(data_type, value)),
+        "UInt64" | "uint64" => value
+            .parse()
+            .map(Variant::UInt64)
+            .map_err(|_| parse_err(data_type, value)),
+        "Float" | "float" => value
+            .parse()
+            .map(Variant::Float)
+            .map_err(|_| parse_err(data_type, value)),
+        "Double" | "double" => value
+            .parse()
+            .map(Variant::Double)
+            .map_err(|_| parse_err(data_type, value)),
+        _ => Ok(Variant::String(opcua::types::UAString::from(value))),
     }
 }
 
@@ -1288,6 +1687,21 @@ fn data_type_node_id_to_string(id: &opcua::types::NodeId) -> String {
     id.to_string()
 }
 
+fn parse_history_time(value: &str) -> AppResult<opcua::types::UtcTime> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.with_timezone(&chrono::Utc).into())
+        .map_err(|_| AppError::invalid_argument(format!("Invalid RFC3339 timestamp '{value}'")))
+}
+
+fn continuation_point_to_string(cp: &opcua::types::ContinuationPoint) -> Option<String> {
+    let bytes = cp.value.as_ref()?;
+    if bytes.is_empty() {
+        None
+    } else {
+        Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    }
+}
+
 /// Parse an OPC UA Argument array from a DataValue (used for InputArguments/OutputArguments properties)
 fn parse_argument_array(dv: &DataValue) -> Vec<MethodArgument> {
     let value = match dv.value.as_ref() {
@@ -1312,7 +1726,7 @@ fn parse_argument_array(dv: &DataValue) -> Vec<MethodArgument> {
     ext_objects
         .into_iter()
         .filter_map(|eo| {
-            let arg = eo.inner_as::<opcua::types::argument::Argument>()?;
+            let arg = eo.inner_as::<Argument>()?;
             Some(MethodArgument {
                 name: {
                     let s = arg.name.to_string();

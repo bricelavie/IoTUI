@@ -1,14 +1,17 @@
 import React from "react";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useAppStore } from "@/stores/appStore";
+import { useSubscriptionStore } from "@/stores/subscriptionStore";
 import { StatusDot, Badge } from "@/components/ui";
 import { Wifi, WifiOff, Server } from "lucide-react";
 
 export const Header: React.FC = () => {
   const { connections, activeConnectionId, disconnect } = useConnectionStore();
   const { activeView } = useAppStore();
+  const { activeSubscriptionId, getSubStatus } = useSubscriptionStore();
 
   const activeConnection = connections.find((c) => c.id === activeConnectionId);
+  const activeSubStatus = activeSubscriptionId ? getSubStatus(activeSubscriptionId) : null;
 
   const viewLabels: Record<string, string> = {
     connection: "Connection Manager",
@@ -60,6 +63,12 @@ export const Header: React.FC = () => {
             <Badge variant={activeConnection.status === "connected" ? "success" : "warning"}>
               {activeConnection.status}
             </Badge>
+            {activeConnection.last_error && (
+              <Badge variant="danger">health issue</Badge>
+            )}
+            {activeSubStatus?.lastError && (
+              <Badge variant="warning">poll degraded</Badge>
+            )}
             {activeConnection.security_policy !== "None" && (
               <Badge variant="info">{activeConnection.security_policy}</Badge>
             )}

@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import type { LogLevel, LogCategory, LogEntry } from "@/types/opcua";
+import { useSettingsStore } from "@/stores/settingsStore";
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
@@ -80,6 +81,7 @@ export const LogPanel: React.FC = () => {
   const [backendLevel, setBackendLevel] = useState("info");
   const [showLevelMenu, setShowLevelMenu] = useState(false);
   const tableTopRef = useRef<HTMLDivElement>(null);
+  const maxLogEntries = useSettingsStore((s) => s.maxLogEntries);
 
   // Auto-scroll to top (newest entries)
   useEffect(() => {
@@ -464,7 +466,7 @@ export const LogPanel: React.FC = () => {
           <span className="w-2 h-2 rounded-sm bg-iot-text-disabled/50" /> Trace: {stats.trace}
         </span>
         <span className="ml-auto">
-          Buffer: {entries.length}/2000
+          Buffer: {entries.length}/{maxLogEntries}
         </span>
         {isPaused && (
           <span className="text-iot-amber font-semibold">PAUSED</span>

@@ -41,8 +41,9 @@ export const MonitoredItemsTable: React.FC = () => {
     subscriptions,
     activeSubscriptionId,
     monitoredValues,
-    isPolling,
+    activePollers,
     removeMonitoredItem,
+    getSubStatus,
   } = useSubscriptionStore();
 
   const [sortField, setSortField] = useState<SortField>("name");
@@ -57,6 +58,11 @@ export const MonitoredItemsTable: React.FC = () => {
   const activeSubName = activeSubscriptionId
     ? getSubscriptionName(activeSubscriptionId)
     : "";
+  const activeStatus = activeSubscriptionId ? getSubStatus(activeSubscriptionId) : null;
+  const activeSubInterval = activeSub?.publishing_interval ?? null;
+  const isStale = activeStatus?.lastUpdateAt
+    ? Date.now() - activeStatus.lastUpdateAt > Math.max((activeSubInterval ?? 1000) * 4, 5000)
+    : false;
 
   const handleSort = useCallback(
     (field: SortField) => {
@@ -71,10 +77,12 @@ export const MonitoredItemsTable: React.FC = () => {
   );
 
   const sortedItems = useMemo(() => {
-    const items = monitoredItems.map((item) => ({
-      ...item,
-      value: monitoredValues.get(item.node_id),
-    }));
+      const items = monitoredItems.map((item) => ({
+        ...item,
+        value: activeSubscriptionId
+          ? monitoredValues.get(`${activeSubscriptionId}::${item.node_id}`)
+          : undefined,
+      }));
 
     items.sort((a, b) => {
       const dir = sortDir === "asc" ? 1 : -1;
@@ -182,12 +190,14 @@ export const MonitoredItemsTable: React.FC = () => {
       headerRight={
         <div className="flex items-center gap-2">
           <Badge variant="default">{activeSubName}</Badge>
-          {isPolling && (
+          {activeSubscriptionId && activePollers.has(activeSubscriptionId) && (
             <span className="flex items-center gap-1 text-2xs text-iot-cyan">
               <span className="w-1.5 h-1.5 rounded-full bg-iot-cyan animate-pulse-slow" />
               LIVE
             </span>
           )}
+          {isStale && <Badge variant="warning">Stale</Badge>}
+          {activeStatus?.lastError && <Badge variant="warning">Polling issue</Badge>}
           <Badge variant="info">{monitoredItems.length} items</Badge>
         </div>
       }

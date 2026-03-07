@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import type {
   CreateSubscriptionRequest,
-  DataChangeEvent,
   MonitoredItemRequest,
   MonitoredValue,
   SubscriptionInfo,
@@ -11,21 +10,29 @@ import { toast } from "@/stores/notificationStore";
 import { getSetting } from "@/stores/settingsStore";
 import { log } from "@/services/logger";
 
+const SUBSCRIPTION_STATE_KEY = "iotui_subscription_state_v1";
+
 interface SubscriptionMeta {
   name: string;
 }
 
+interface PollController {
+  timerId: ReturnType<typeof setTimeout> | null;
+  inFlight: boolean;
+  lastError: string | null;
+  lastSuccessAt: number | null;
+  lastPollAt: number | null;
+}
+
 interface SubscriptionStore {
-  // State
   subscriptions: SubscriptionInfo[];
   activeSubscriptionId: number | null;
   monitoredValues: Map<string, MonitoredValue>;
-  isPolling: boolean;
-  pollIntervalId: ReturnType<typeof setInterval> | null;
+  activePollers: Set<number>;
   subscriptionMeta: Map<number, SubscriptionMeta>;
   nextSubNumber: number;
-
-  // Actions
+  pollErrors: Map<number, string>;
+  lastUpdateAt: Map<number, number>;
   createSubscription: (
     connectionId: string,
     request?: Partial<CreateSubscriptionRequest>,
@@ -44,23 +51,106 @@ interface SubscriptionStore {
     nodeId: string
   ) => Promise<void>;
   startPolling: (connectionId: string, subscriptionId: number) => void;
-  stopPolling: () => void;
+  stopPolling: (subscriptionId?: number) => void;
   refreshSubscriptions: (connectionId: string) => Promise<void>;
   renameSubscription: (subId: number, name: string) => void;
   getSubscriptionName: (subId: number) => string;
   getAllMonitoredNodeIds: () => Set<string>;
   getSubscriptionsForNode: (nodeId: string) => { subId: number; name: string; itemId: number }[];
+  getSubStatus: (subId: number) => { isPolling: boolean; lastError: string | null; lastUpdateAt: number | null };
+  setActiveSubscriptionId: (subId: number | null) => void;
   clearAll: () => void;
 }
 
+const pollControllers = new Map<number, PollController>();
+
+function monitoredValueKey(subscriptionId: number, nodeId: string) {
+  return `${subscriptionId}::${nodeId}`;
+}
+
+function ensureController(subscriptionId: number): PollController {
+  let controller = pollControllers.get(subscriptionId);
+  if (!controller) {
+    controller = {
+      timerId: null,
+      inFlight: false,
+      lastError: null,
+      lastSuccessAt: null,
+      lastPollAt: null,
+    };
+    pollControllers.set(subscriptionId, controller);
+  }
+  return controller;
+}
+
+function clearController(subscriptionId: number) {
+  const controller = pollControllers.get(subscriptionId);
+  if (!controller) return;
+  if (controller.timerId) {
+    clearTimeout(controller.timerId);
+  }
+  pollControllers.delete(subscriptionId);
+}
+
+function loadPersistedState() {
+  try {
+    const raw = localStorage.getItem(SUBSCRIPTION_STATE_KEY);
+    if (!raw) {
+      return {
+        activeSubscriptionId: null as number | null,
+        nextSubNumber: 1,
+        subscriptionMeta: new Map<number, SubscriptionMeta>(),
+      };
+    }
+    const parsed = JSON.parse(raw) as {
+      activeSubscriptionId?: number | null;
+      nextSubNumber?: number;
+      subscriptionMeta?: Record<string, SubscriptionMeta>;
+    };
+    return {
+      activeSubscriptionId:
+        typeof parsed.activeSubscriptionId === "number" ? parsed.activeSubscriptionId : null,
+      nextSubNumber:
+        typeof parsed.nextSubNumber === "number" ? parsed.nextSubNumber : 1,
+      subscriptionMeta: new Map(
+        Object.entries(parsed.subscriptionMeta ?? {}).map(([key, value]) => [Number(key), value])
+      ),
+    };
+  } catch {
+    return {
+      activeSubscriptionId: null as number | null,
+      nextSubNumber: 1,
+      subscriptionMeta: new Map<number, SubscriptionMeta>(),
+    };
+  }
+}
+
+function persistState(state: {
+  activeSubscriptionId: number | null;
+  nextSubNumber: number;
+  subscriptionMeta: Map<number, SubscriptionMeta>;
+}) {
+  localStorage.setItem(
+    SUBSCRIPTION_STATE_KEY,
+    JSON.stringify({
+      activeSubscriptionId: state.activeSubscriptionId,
+      nextSubNumber: state.nextSubNumber,
+      subscriptionMeta: Object.fromEntries(state.subscriptionMeta.entries()),
+    })
+  );
+}
+
+const persistedState = loadPersistedState();
+
 export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
   subscriptions: [],
-  activeSubscriptionId: null,
+  activeSubscriptionId: persistedState.activeSubscriptionId,
   monitoredValues: new Map(),
-  isPolling: false,
-  pollIntervalId: null,
-  subscriptionMeta: new Map(),
-  nextSubNumber: 1,
+  activePollers: new Set(),
+  subscriptionMeta: persistedState.subscriptionMeta,
+  nextSubNumber: persistedState.nextSubNumber,
+  pollErrors: new Map(),
+  lastUpdateAt: new Map(),
 
   createSubscription: async (connectionId, request, name) => {
     const { nextSubNumber, subscriptionMeta } = get();
@@ -85,46 +175,51 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
       subscriptionMeta: newMeta,
       nextSubNumber: nextSubNumber + 1,
     });
+    persistState({
+      activeSubscriptionId: result.subscription_id,
+      nextSubNumber: nextSubNumber + 1,
+      subscriptionMeta: newMeta,
+    });
     log("info", "subscription", "createSubscription", `Created "${subName}" (id=${result.subscription_id}, interval=${result.revised_publishing_interval}ms)`);
     toast.success("Subscription created", `${subName} (${result.revised_publishing_interval}ms)`);
     return result.subscription_id;
   },
 
   deleteSubscription: async (connectionId, subId) => {
-    const { stopPolling, activeSubscriptionId, subscriptionMeta, subscriptions } = get();
+    const { activeSubscriptionId, subscriptionMeta, subscriptions, nextSubNumber } = get();
     const name = subscriptionMeta.get(subId)?.name || `#${subId}`;
-    // Capture the subscription's monitored items BEFORE deleting
     const deletedSub = subscriptions.find((s) => s.id === subId);
-    if (activeSubscriptionId === subId) {
-      stopPolling();
-    }
+    get().stopPolling(subId);
     await opcua.deleteSubscription(connectionId, subId);
     const subs = await opcua.getSubscriptions(connectionId);
 
-    // Clean monitoredValues: remove nodes that no surviving subscription monitors
     const newValues = new Map(get().monitoredValues);
     if (deletedSub) {
-      const survivingNodeIds = new Set<string>();
-      for (const s of subs) {
-        for (const item of s.monitored_items) {
-          survivingNodeIds.add(item.node_id);
-        }
-      }
       for (const item of deletedSub.monitored_items) {
-        if (!survivingNodeIds.has(item.node_id)) {
-          newValues.delete(item.node_id);
-        }
+        newValues.delete(monitoredValueKey(subId, item.node_id));
       }
     }
 
     const newMeta = new Map(subscriptionMeta);
     newMeta.delete(subId);
+    const newErrors = new Map(get().pollErrors);
+    newErrors.delete(subId);
+    const newUpdates = new Map(get().lastUpdateAt);
+    newUpdates.delete(subId);
+    const nextActive = activeSubscriptionId === subId ? null : activeSubscriptionId;
+
     set({
       subscriptions: subs,
-      activeSubscriptionId:
-        activeSubscriptionId === subId ? null : activeSubscriptionId,
+      activeSubscriptionId: nextActive,
       subscriptionMeta: newMeta,
       monitoredValues: newValues,
+      pollErrors: newErrors,
+      lastUpdateAt: newUpdates,
+    });
+    persistState({
+      activeSubscriptionId: nextActive,
+      nextSubNumber,
+      subscriptionMeta: newMeta,
     });
     log("info", "subscription", "deleteSubscription", `Deleted "${name}" (id=${subId})`);
     toast.info("Subscription deleted", name);
@@ -139,46 +234,46 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
   removeMonitoredItem: async (connectionId, subscriptionId, itemId, nodeId) => {
     await opcua.removeMonitoredItems(connectionId, subscriptionId, [itemId]);
     const subs = await opcua.getSubscriptions(connectionId);
-    // Only remove from monitoredValues if no other subscription monitors this node
     const newValues = new Map(get().monitoredValues);
-    const stillMonitored = subs.some((s) =>
-      s.monitored_items.some((item) => item.node_id === nodeId)
-    );
-    if (!stillMonitored) {
-      newValues.delete(nodeId);
-    }
+    newValues.delete(monitoredValueKey(subscriptionId, nodeId));
     set({ subscriptions: subs, monitoredValues: newValues });
     toast.info("Removed monitored item");
   },
 
   startPolling: (connectionId, subscriptionId) => {
-    const { pollIntervalId, subscriptions } = get();
-    if (pollIntervalId) {
-      clearInterval(pollIntervalId);
+    const sub = get().subscriptions.find((entry) => entry.id === subscriptionId);
+    const interval = sub?.publishing_interval ?? getSetting("defaultPublishingInterval");
+    const controller = ensureController(subscriptionId);
+
+    if (controller.timerId) {
+      clearTimeout(controller.timerId);
+      controller.timerId = null;
     }
 
-    // Use the subscription's publishing interval instead of hardcoded 500ms
-    const sub = subscriptions.find((s) => s.id === subscriptionId);
-    const interval = sub?.publishing_interval ?? getSetting("defaultPublishingInterval");
+    const schedule = (delay: number) => {
+      controller.timerId = setTimeout(runPoll, delay);
+    };
 
-    log("info", "subscription", "startPolling", `Polling sub ${subscriptionId} every ${interval}ms`);
-    set({ isPolling: true, activeSubscriptionId: subscriptionId });
+    const runPoll = async () => {
+      if (controller.inFlight) {
+        schedule(interval);
+        return;
+      }
 
-    const poll = async () => {
+      controller.inFlight = true;
+      controller.lastPollAt = Date.now();
       try {
-        const events = await opcua.pollSubscription(
-          connectionId,
-          subscriptionId
-        );
-        const { monitoredValues } = get();
+        const events = await opcua.pollSubscription(connectionId, subscriptionId);
+        const { monitoredValues, pollErrors, lastUpdateAt } = get();
         const newValues = new Map(monitoredValues);
+        const newErrors = new Map(pollErrors);
+        const newUpdates = new Map(lastUpdateAt);
 
         for (const event of events) {
-          const existing = newValues.get(event.node_id);
+          const key = monitoredValueKey(subscriptionId, event.node_id);
+          const existing = newValues.get(key);
           const numericValue = parseFloat(event.value);
-          const isNumeric = !isNaN(numericValue);
-
-          // Create a NEW array (not mutate in-place) so React detects the change
+          const isNumeric = !Number.isNaN(numericValue);
           let history = existing?.history ? [...existing.history] : [];
           if (isNumeric) {
             const maxHistory = getSetting("maxHistoryPoints");
@@ -188,40 +283,81 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
             }
           }
 
-          newValues.set(event.node_id, {
+          newValues.set(key, {
             ...event,
             history,
             numericValue: isNumeric ? numericValue : undefined,
             previousValue: existing?.value,
+            subscriptionKey: key,
           });
         }
 
-        set({ monitoredValues: newValues });
+        controller.lastError = null;
+        controller.lastSuccessAt = Date.now();
+        newErrors.delete(subscriptionId);
+        newUpdates.set(subscriptionId, controller.lastSuccessAt);
+
+        set({ monitoredValues: newValues, pollErrors: newErrors, lastUpdateAt: newUpdates });
       } catch (e) {
-        // Silently fail on poll errors to avoid toast spam
-        console.error("Poll failed:", e);
+        const message = String(e);
+        controller.lastError = message;
+        const nextErrors = new Map(get().pollErrors);
+        nextErrors.set(subscriptionId, message);
+        set({ pollErrors: nextErrors });
+        log("warn", "subscription", "poll", `Polling failed for subscription ${subscriptionId}: ${message}`);
+      } finally {
+        controller.inFlight = false;
+        const activePollers = new Set(get().activePollers);
+        if (activePollers.has(subscriptionId)) {
+          schedule(interval);
+        }
       }
     };
 
-    // First poll immediately
-    poll();
-
-    const id = setInterval(poll, interval);
-    set({ pollIntervalId: id });
+    const activePollers = new Set(get().activePollers);
+    activePollers.add(subscriptionId);
+    set({ activePollers, activeSubscriptionId: subscriptionId });
+    persistState({
+      activeSubscriptionId: subscriptionId,
+      nextSubNumber: get().nextSubNumber,
+      subscriptionMeta: get().subscriptionMeta,
+    });
+    log("info", "subscription", "startPolling", `Polling sub ${subscriptionId} every ${interval}ms`);
+    void runPoll();
   },
 
-  stopPolling: () => {
-    const { pollIntervalId } = get();
-    if (pollIntervalId) {
-      clearInterval(pollIntervalId);
-      log("info", "subscription", "stopPolling", "Polling stopped");
+  stopPolling: (subscriptionId) => {
+    const activePollers = new Set(get().activePollers);
+
+    if (subscriptionId === undefined) {
+      for (const subId of activePollers) {
+        clearController(subId);
+      }
+      activePollers.clear();
+      log("info", "subscription", "stopPolling", "All polling stopped");
+      set({ activePollers });
+      return;
     }
-    set({ isPolling: false, pollIntervalId: null });
+
+    if (activePollers.delete(subscriptionId)) {
+      clearController(subscriptionId);
+      log("info", "subscription", "stopPolling", `Polling stopped for sub ${subscriptionId}`);
+      set({ activePollers });
+    }
   },
 
   refreshSubscriptions: async (connectionId) => {
     const subs = await opcua.getSubscriptions(connectionId);
-    set({ subscriptions: subs });
+    const activeSubscriptionId = get().activeSubscriptionId;
+    const nextActive = subs.some((sub) => sub.id === activeSubscriptionId)
+      ? activeSubscriptionId
+      : subs[0]?.id ?? null;
+    set({ subscriptions: subs, activeSubscriptionId: nextActive });
+    persistState({
+      activeSubscriptionId: nextActive,
+      nextSubNumber: get().nextSubNumber,
+      subscriptionMeta: get().subscriptionMeta,
+    });
   },
 
   renameSubscription: (subId, name) => {
@@ -229,6 +365,11 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
     const existing = newMeta.get(subId) || { name: `#${subId}` };
     newMeta.set(subId, { ...existing, name });
     set({ subscriptionMeta: newMeta });
+    persistState({
+      activeSubscriptionId: get().activeSubscriptionId,
+      nextSubNumber: get().nextSubNumber,
+      subscriptionMeta: newMeta,
+    });
   },
 
   getSubscriptionName: (subId) => {
@@ -236,9 +377,8 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
   },
 
   getAllMonitoredNodeIds: () => {
-    const { subscriptions } = get();
     const nodeIds = new Set<string>();
-    for (const sub of subscriptions) {
+    for (const sub of get().subscriptions) {
       for (const item of sub.monitored_items) {
         nodeIds.add(item.node_id);
       }
@@ -260,15 +400,37 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
     return results;
   },
 
+  getSubStatus: (subId) => ({
+    isPolling: get().activePollers.has(subId),
+    lastError: get().pollErrors.get(subId) ?? null,
+    lastUpdateAt: get().lastUpdateAt.get(subId) ?? null,
+  }),
+
+  setActiveSubscriptionId: (subId) => {
+    set({ activeSubscriptionId: subId });
+    persistState({
+      activeSubscriptionId: subId,
+      nextSubNumber: get().nextSubNumber,
+      subscriptionMeta: get().subscriptionMeta,
+    });
+  },
+
   clearAll: () => {
-    const { stopPolling } = get();
-    stopPolling();
+    get().stopPolling();
     set({
       subscriptions: [],
       activeSubscriptionId: null,
       monitoredValues: new Map(),
+      activePollers: new Set(),
       subscriptionMeta: new Map(),
       nextSubNumber: 1,
+      pollErrors: new Map(),
+      lastUpdateAt: new Map(),
+    });
+    persistState({
+      activeSubscriptionId: null,
+      nextSubNumber: 1,
+      subscriptionMeta: new Map(),
     });
   },
 }));

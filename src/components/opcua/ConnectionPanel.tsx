@@ -54,7 +54,11 @@ interface SavedProfile {
   security_mode: string;
   auth_type: "anonymous" | "username_password" | "certificate";
   username?: string;
+  session_timeout?: number;
+  use_simulator?: boolean;
 }
+
+const LAST_DRAFT_KEY = "iotui_connection_draft_v1";
 
 const PROFILES_KEY = "iotui_saved_profiles";
 const RECENT_KEY = "iotui_recent_endpoints";
@@ -89,6 +93,14 @@ function isValidOpcUrl(url: string): boolean {
   return url.startsWith("opc.tcp://") && url.length > 10;
 }
 
+function loadDraft() {
+  try {
+    return JSON.parse(localStorage.getItem(LAST_DRAFT_KEY) || "null") as Partial<SavedProfile> | null;
+  } catch {
+    return null;
+  }
+}
+
 export const ConnectionPanel: React.FC = () => {
   const {
     connections,
@@ -116,6 +128,7 @@ export const ConnectionPanel: React.FC = () => {
   const [password, setPassword] = useState("");
   const [certPath, setCertPath] = useState("");
   const [keyPath, setKeyPath] = useState("");
+  const [sessionTimeout, setSessionTimeout] = useState("60000");
   const [urlError, setUrlError] = useState("");
   const [useSimulator, setUseSimulator] = useState(false);
 
@@ -131,7 +144,34 @@ export const ConnectionPanel: React.FC = () => {
   useEffect(() => {
     setProfiles(loadProfiles());
     setRecentEndpoints(loadRecentEndpoints());
+    const draft = loadDraft();
+    if (draft) {
+      if (draft.name) setName(draft.name);
+      if (draft.endpoint_url) setEndpointUrl(draft.endpoint_url);
+      if (draft.security_policy) setSecPolicy(draft.security_policy);
+      if (draft.security_mode) setSecMode(draft.security_mode);
+      if (draft.auth_type) setAuthType(draft.auth_type);
+      if (draft.username) setUsername(draft.username);
+      if (draft.session_timeout) setSessionTimeout(String(draft.session_timeout));
+      if (typeof draft.use_simulator === "boolean") setUseSimulator(draft.use_simulator);
+    }
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem(
+      LAST_DRAFT_KEY,
+      JSON.stringify({
+        name,
+        endpoint_url: endpointUrl,
+        security_policy: secPolicy,
+        security_mode: secMode,
+        auth_type: authType,
+        username,
+        session_timeout: Number(sessionTimeout) || 60000,
+        use_simulator: useSimulator,
+      })
+    );
+  }, [name, endpointUrl, secPolicy, secMode, authType, username, sessionTimeout, useSimulator]);
 
   // URL validation
   useEffect(() => {
@@ -147,14 +187,22 @@ export const ConnectionPanel: React.FC = () => {
       toast.warning("Invalid URL", "Endpoint must start with opc.tcp://");
       return;
     }
-    await discover(endpointUrl);
-    addRecentEndpoint(endpointUrl);
-    setRecentEndpoints(loadRecentEndpoints());
+    try {
+      await discover(endpointUrl);
+      addRecentEndpoint(endpointUrl);
+      setRecentEndpoints(loadRecentEndpoints());
+    } catch (e) {
+      toast.error("Discovery failed", String(e));
+    }
   };
 
   const handleConnect = async () => {
     if (!isValidOpcUrl(endpointUrl)) {
       toast.warning("Invalid URL", "Endpoint must start with opc.tcp://");
+      return;
+    }
+    if (authType === "certificate" && !useSimulator) {
+      toast.warning("Certificate auth unavailable", "Live certificate authentication is not implemented yet.");
       return;
     }
     try {
@@ -166,6 +214,7 @@ export const ConnectionPanel: React.FC = () => {
         auth_type: authType,
         username: authType === "username_password" ? username : undefined,
         password: authType === "username_password" ? password : undefined,
+        session_timeout: Number(sessionTimeout) || 60000,
         use_simulator: useSimulator,
       });
       addRecentEndpoint(endpointUrl);
@@ -206,6 +255,8 @@ export const ConnectionPanel: React.FC = () => {
       security_mode: secMode,
       auth_type: authType,
       username: authType === "username_password" ? username : undefined,
+      session_timeout: Number(sessionTimeout) || 60000,
+      use_simulator: useSimulator,
     };
     const updated = [...profiles, profile];
     setProfiles(updated);
@@ -219,6 +270,8 @@ export const ConnectionPanel: React.FC = () => {
     setSecPolicy(profile.security_policy);
     setSecMode(profile.security_mode);
     setAuthType(profile.auth_type);
+    setSessionTimeout(String(profile.session_timeout || 60000));
+    setUseSimulator(Boolean(profile.use_simulator));
     if (profile.username) setUsername(profile.username);
     toast.info("Profile loaded", profile.name);
   };
@@ -380,6 +433,16 @@ export const ConnectionPanel: React.FC = () => {
                 />
               </div>
 
+              <Input
+                label="Session Timeout (ms)"
+                type="number"
+                value={sessionTimeout}
+                min="10000"
+                max="300000"
+                step="1000"
+                onChange={(e) => setSessionTimeout(e.target.value)}
+              />
+
               <Select
                 label="Authentication"
                 options={AUTH_TYPES}
@@ -410,6 +473,9 @@ export const ConnectionPanel: React.FC = () => {
                     <span className="text-xs text-iot-amber">
                       Certificate authentication requires PEM/DER cert files
                     </span>
+                  </div>
+                  <div className="text-2xs text-iot-amber">
+                    Certificate auth is not implemented yet for live connections; use this only for saved planning data.
                   </div>
                   <Input
                     label="Certificate Path (.pem / .der)"

@@ -1,55 +1,78 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use tokio::sync::{Mutex, RwLock};
+
+use crate::error::{AppError, AppResult};
+
+use super::client::OpcUaConnection;
 use super::simulator::OpcUaSimulator;
 use super::types::*;
-use super::client::OpcUaConnection;
 
-/// Backend kind for a connection
 enum ConnectionBackend {
     Simulator,
-    Live(OpcUaConnection),
-}
-
-/// Manages all OPC UA client connections (both simulator and live)
-pub struct UaClientManager {
-    connections: tokio::sync::Mutex<HashMap<String, ConnectionState>>,
-    simulator: OpcUaSimulator,
-    next_sub_id: AtomicU32,
-    next_item_id: AtomicU32,
+    Live(Arc<Mutex<OpcUaConnection>>),
 }
 
 struct ConnectionState {
     config: ConnectionConfig,
     status: ConnectionStatus,
+    last_error: Option<String>,
     backend: ConnectionBackend,
-    /// Subscription state (only used for simulator connections)
     subscriptions: HashMap<u32, SubscriptionState>,
 }
 
 struct SubscriptionState {
     info: CreateSubscriptionRequest,
-    items: Vec<(u32, String, String)>, // (item_id, node_id, display_name)
+    items: Vec<(u32, String, String)>,
+}
+
+type SharedConnectionState = Arc<RwLock<ConnectionState>>;
+
+pub struct UaClientManager {
+    connections: RwLock<HashMap<String, SharedConnectionState>>,
+    simulator: OpcUaSimulator,
+    next_sub_id: AtomicU32,
+    next_item_id: AtomicU32,
 }
 
 impl UaClientManager {
     pub fn new() -> Self {
         Self {
-            connections: tokio::sync::Mutex::new(HashMap::new()),
+            connections: RwLock::new(HashMap::new()),
             simulator: OpcUaSimulator::new(),
             next_sub_id: AtomicU32::new(1),
             next_item_id: AtomicU32::new(1),
         }
     }
 
-    /// Determine if a connection should use the simulator
     fn should_use_simulator(config: &ConnectionConfig) -> bool {
         config.use_simulator
     }
 
-    // ─── Connection Management ───────────────────────────────────
+    async fn get_connection(&self, connection_id: &str) -> AppResult<SharedConnectionState> {
+        self.connections
+            .read()
+            .await
+            .get(connection_id)
+            .cloned()
+            .ok_or_else(|| AppError::not_found(format!("Connection '{connection_id}' not found")))
+    }
 
-    pub async fn connect(&self, config: ConnectionConfig) -> Result<String, String> {
+    async fn live_backend(
+        &self,
+        connection_id: &str,
+    ) -> AppResult<Option<Arc<Mutex<OpcUaConnection>>>> {
+        let state = self.get_connection(connection_id).await?;
+        let guard = state.read().await;
+        Ok(match &guard.backend {
+            ConnectionBackend::Simulator => None,
+            ConnectionBackend::Live(client) => Some(client.clone()),
+        })
+    }
+
+    pub async fn connect(&self, config: ConnectionConfig) -> AppResult<String> {
         let use_sim = Self::should_use_simulator(&config);
         let id = uuid::Uuid::new_v4().to_string();
 
@@ -57,97 +80,106 @@ impl UaClientManager {
             log::info!("Connecting via simulator for: {}", config.endpoint_url);
             ConnectionBackend::Simulator
         } else {
-            log::info!(
-                "Connecting via OPC UA client for: {}",
-                config.endpoint_url
-            );
+            log::info!("Connecting via OPC UA client for: {}", config.endpoint_url);
             let conn = OpcUaConnection::connect(&config).await?;
-            ConnectionBackend::Live(conn)
+            ConnectionBackend::Live(Arc::new(Mutex::new(conn)))
         };
 
-        let mut conns = self.connections.lock().await;
-        conns.insert(
-            id.clone(),
-            ConnectionState {
-                config,
-                status: ConnectionStatus::Connected,
-                backend,
-                subscriptions: HashMap::new(),
-            },
-        );
+        let state = Arc::new(RwLock::new(ConnectionState {
+            config,
+            status: ConnectionStatus::Connected,
+            last_error: None,
+            backend,
+            subscriptions: HashMap::new(),
+        }));
+
+        self.connections.write().await.insert(id.clone(), state);
         Ok(id)
     }
 
-    pub async fn disconnect(&self, connection_id: &str) -> Result<(), String> {
-        let mut conns = self.connections.lock().await;
-        let state = conns
+    pub async fn disconnect(&self, connection_id: &str) -> AppResult<()> {
+        let state = self
+            .connections
+            .write()
+            .await
             .remove(connection_id)
-            .ok_or_else(|| "Connection not found".to_string())?;
+            .ok_or_else(|| AppError::not_found("Connection not found"))?;
 
-        // Clean up live connections
-        match state.backend {
-            ConnectionBackend::Simulator => {}
-            ConnectionBackend::Live(conn) => {
-                let _ = conn.disconnect().await;
-            }
+        let backend = {
+            let mut guard = state.write().await;
+            guard.status = ConnectionStatus::Disconnected;
+            std::mem::replace(&mut guard.backend, ConnectionBackend::Simulator)
+        };
+
+        if let ConnectionBackend::Live(client) = backend {
+            let client = client.lock().await;
+            let _ = client.disconnect().await;
         }
 
         Ok(())
     }
 
-    pub async fn discover_endpoints(&self, url: &str) -> Result<Vec<EndpointInfo>, String> {
-        // Try live discovery first
-        match OpcUaConnection::discover_endpoints(url).await {
-            Ok(endpoints) if !endpoints.is_empty() => return Ok(endpoints),
-            Err(e) => {
-                log::warn!("Endpoint discovery failed, falling back to simulator: {e}");
-            }
-            _ => {}
+    pub async fn discover_endpoints(&self, url: &str) -> AppResult<Vec<EndpointInfo>> {
+        if url.starts_with("opc.tcp://simulator") {
+            return Ok(self.simulator.discover_endpoints(url));
         }
-
-        // Fall back to simulator
-        Ok(self.simulator.discover_endpoints(url))
+        OpcUaConnection::discover_endpoints(url).await
     }
 
     pub async fn list_connections(&self) -> Vec<ConnectionInfo> {
-        let conns = self.connections.lock().await;
-        conns
+        let entries: Vec<(String, SharedConnectionState)> = self
+            .connections
+            .read()
+            .await
             .iter()
-            .map(|(id, state)| ConnectionInfo {
-                id: id.clone(),
-                name: state.config.name.clone(),
-                endpoint_url: state.config.endpoint_url.clone(),
-                status: state.status.clone(),
-                security_policy: state.config.security_policy.clone(),
-                security_mode: state.config.security_mode.clone(),
-                is_simulator: matches!(state.backend, ConnectionBackend::Simulator),
-            })
-            .collect()
+            .map(|(id, state)| (id.clone(), state.clone()))
+            .collect();
+
+        let mut results = Vec::with_capacity(entries.len());
+        for (id, state) in entries {
+            let guard = state.read().await;
+            results.push(ConnectionInfo {
+                id,
+                name: guard.config.name.clone(),
+                endpoint_url: guard.config.endpoint_url.clone(),
+                status: guard.status.clone(),
+                security_policy: guard.config.security_policy.clone(),
+                security_mode: guard.config.security_mode.clone(),
+                is_simulator: matches!(guard.backend, ConnectionBackend::Simulator),
+                last_error: guard.last_error.clone(),
+            });
+        }
+
+        results
     }
 
-    pub async fn get_status(&self, connection_id: &str) -> Result<ConnectionStatus, String> {
-        let conns = self.connections.lock().await;
-        conns
-            .get(connection_id)
-            .map(|s| s.status.clone())
-            .ok_or_else(|| "Connection not found".to_string())
+    pub async fn get_status(&self, connection_id: &str) -> AppResult<ConnectionStatus> {
+        let state = self.get_connection(connection_id).await?;
+        let live_backend = self.live_backend(connection_id).await?;
+        if let Some(client) = live_backend {
+            let health = client.lock().await.health().await;
+            let mut guard = state.write().await;
+            guard.status = match health {
+                super::client::LiveConnectionHealth::Connected => ConnectionStatus::Connected,
+                super::client::LiveConnectionHealth::Reconnecting => ConnectionStatus::Reconnecting,
+                super::client::LiveConnectionHealth::Disconnected => ConnectionStatus::Error,
+            };
+            if health == super::client::LiveConnectionHealth::Disconnected {
+                guard.last_error.get_or_insert_with(|| "Connection is disconnected".to_string());
+            } else if health == super::client::LiveConnectionHealth::Connected {
+                guard.last_error = None;
+            }
+            return Ok(guard.status.clone());
+        }
+
+        let status = state.read().await.status.clone();
+        Ok(status)
     }
 
-    // ─── Browse ──────────────────────────────────────────────────
-
-    pub async fn browse(
-        &self,
-        connection_id: &str,
-        node_id: &str,
-    ) -> Result<Vec<BrowseNode>, String> {
-        let conns = self.connections.lock().await;
-        let conn = conns
-            .get(connection_id)
-            .ok_or_else(|| "Connection not found".to_string())?;
-
-        match &conn.backend {
-            ConnectionBackend::Simulator => Ok(self.simulator.browse(node_id)),
-            ConnectionBackend::Live(client) => client.browse(node_id).await,
+    pub async fn browse(&self, connection_id: &str, node_id: &str) -> AppResult<Vec<BrowseNode>> {
+        match self.live_backend(connection_id).await? {
+            Some(client) => client.lock().await.browse(node_id).await,
+            None => Ok(self.simulator.browse(node_id)),
         }
     }
 
@@ -155,33 +187,21 @@ impl UaClientManager {
         &self,
         connection_id: &str,
         node_id: &str,
-    ) -> Result<NodeDetails, String> {
-        let conns = self.connections.lock().await;
-        let conn = conns
-            .get(connection_id)
-            .ok_or_else(|| "Connection not found".to_string())?;
-
-        match &conn.backend {
-            ConnectionBackend::Simulator => Ok(self.simulator.read_node_details(node_id)),
-            ConnectionBackend::Live(client) => client.read_node_details(node_id).await,
+    ) -> AppResult<NodeDetails> {
+        match self.live_backend(connection_id).await? {
+            Some(client) => client.lock().await.read_node_details(node_id).await,
+            None => Ok(self.simulator.read_node_details(node_id)),
         }
     }
-
-    // ─── Read / Write ────────────────────────────────────────────
 
     pub async fn read_values(
         &self,
         connection_id: &str,
         node_ids: &[String],
-    ) -> Result<Vec<ReadResult>, String> {
-        let conns = self.connections.lock().await;
-        let conn = conns
-            .get(connection_id)
-            .ok_or_else(|| "Connection not found".to_string())?;
-
-        match &conn.backend {
-            ConnectionBackend::Simulator => Ok(self.simulator.read_values(node_ids)),
-            ConnectionBackend::Live(client) => client.read_values(node_ids).await,
+    ) -> AppResult<Vec<ReadResult>> {
+        match self.live_backend(connection_id).await? {
+            Some(client) => client.lock().await.read_values(node_ids).await,
+            None => Ok(self.simulator.read_values(node_ids)),
         }
     }
 
@@ -189,34 +209,36 @@ impl UaClientManager {
         &self,
         connection_id: &str,
         request: &WriteRequest,
-    ) -> Result<WriteResult, String> {
-        let conns = self.connections.lock().await;
-        let conn = conns
-            .get(connection_id)
-            .ok_or_else(|| "Connection not found".to_string())?;
-
-        match &conn.backend {
-            ConnectionBackend::Simulator => Ok(self.simulator.write_value(request)),
-            ConnectionBackend::Live(client) => client.write_value(request).await,
+    ) -> AppResult<WriteResult> {
+        match self.live_backend(connection_id).await? {
+            Some(client) => client.lock().await.write_value(request).await,
+            None => Ok(self.simulator.write_value(request)),
         }
     }
 
-    // ─── Subscriptions ───────────────────────────────────────────
+    pub async fn read_history(
+        &self,
+        connection_id: &str,
+        request: &HistoryReadRequest,
+    ) -> AppResult<HistoryReadResult> {
+        match self.live_backend(connection_id).await? {
+            Some(client) => client.lock().await.read_history(request).await,
+            None => Ok(self.simulator.read_history(request)),
+        }
+    }
 
     pub async fn create_subscription(
         &self,
         connection_id: &str,
         request: &CreateSubscriptionRequest,
-    ) -> Result<CreateSubscriptionResult, String> {
-        let mut conns = self.connections.lock().await;
-        let conn = conns
-            .get_mut(connection_id)
-            .ok_or("Connection not found")?;
+    ) -> AppResult<CreateSubscriptionResult> {
+        let state = self.get_connection(connection_id).await?;
+        let mut guard = state.write().await;
 
-        match &mut conn.backend {
+        match &mut guard.backend {
             ConnectionBackend::Simulator => {
                 let sub_id = self.next_sub_id.fetch_add(1, Ordering::Relaxed);
-                conn.subscriptions.insert(
+                guard.subscriptions.insert(
                     sub_id,
                     SubscriptionState {
                         info: request.clone(),
@@ -231,7 +253,7 @@ impl UaClientManager {
                     revised_max_keep_alive_count: request.max_keep_alive_count,
                 })
             }
-            ConnectionBackend::Live(client) => client.create_subscription(request).await,
+            ConnectionBackend::Live(client) => client.lock().await.create_subscription(request).await,
         }
     }
 
@@ -239,20 +261,19 @@ impl UaClientManager {
         &self,
         connection_id: &str,
         subscription_id: u32,
-    ) -> Result<(), String> {
-        let mut conns = self.connections.lock().await;
-        let conn = conns
-            .get_mut(connection_id)
-            .ok_or("Connection not found")?;
+    ) -> AppResult<()> {
+        let state = self.get_connection(connection_id).await?;
+        let mut guard = state.write().await;
 
-        match &mut conn.backend {
+        match &mut guard.backend {
             ConnectionBackend::Simulator => {
-                conn.subscriptions
+                guard
+                    .subscriptions
                     .remove(&subscription_id)
-                    .ok_or("Subscription not found")?;
+                    .ok_or_else(|| AppError::not_found("Subscription not found"))?;
                 Ok(())
             }
-            ConnectionBackend::Live(client) => client.delete_subscription(subscription_id).await,
+            ConnectionBackend::Live(client) => client.lock().await.delete_subscription(subscription_id).await,
         }
     }
 
@@ -261,37 +282,33 @@ impl UaClientManager {
         connection_id: &str,
         subscription_id: u32,
         items: &[MonitoredItemRequest],
-    ) -> Result<Vec<u32>, String> {
-        let mut conns = self.connections.lock().await;
-        let conn = conns
-            .get_mut(connection_id)
-            .ok_or("Connection not found")?;
+    ) -> AppResult<Vec<u32>> {
+        let state = self.get_connection(connection_id).await?;
+        let mut guard = state.write().await;
 
-        match &mut conn.backend {
+        match &mut guard.backend {
             ConnectionBackend::Simulator => {
-                let sub = conn
+                let sub = guard
                     .subscriptions
                     .get_mut(&subscription_id)
-                    .ok_or("Subscription not found")?;
+                    .ok_or_else(|| AppError::not_found("Subscription not found"))?;
 
-                let ids: Vec<u32> = items
+                let ids = items
                     .iter()
                     .map(|item| {
                         let id = self.next_item_id.fetch_add(1, Ordering::Relaxed);
-                        let display = item
+                        let display_name = item
                             .display_name
                             .clone()
                             .unwrap_or_else(|| item.node_id.clone());
-                        sub.items.push((id, item.node_id.clone(), display));
+                        sub.items.push((id, item.node_id.clone(), display_name));
                         id
                     })
                     .collect();
 
                 Ok(ids)
             }
-            ConnectionBackend::Live(client) => {
-                client.add_monitored_items(subscription_id, items).await
-            }
+            ConnectionBackend::Live(client) => client.lock().await.add_monitored_items(subscription_id, items).await,
         }
     }
 
@@ -300,24 +317,20 @@ impl UaClientManager {
         connection_id: &str,
         subscription_id: u32,
         item_ids: &[u32],
-    ) -> Result<(), String> {
-        let mut conns = self.connections.lock().await;
-        let conn = conns
-            .get_mut(connection_id)
-            .ok_or("Connection not found")?;
+    ) -> AppResult<()> {
+        let state = self.get_connection(connection_id).await?;
+        let mut guard = state.write().await;
 
-        match &mut conn.backend {
+        match &mut guard.backend {
             ConnectionBackend::Simulator => {
-                let sub = conn
+                let sub = guard
                     .subscriptions
                     .get_mut(&subscription_id)
-                    .ok_or("Subscription not found")?;
+                    .ok_or_else(|| AppError::not_found("Subscription not found"))?;
                 sub.items.retain(|(id, _, _)| !item_ids.contains(id));
                 Ok(())
             }
-            ConnectionBackend::Live(client) => {
-                client.remove_monitored_items(subscription_id, item_ids).await
-            }
+            ConnectionBackend::Live(client) => client.lock().await.remove_monitored_items(subscription_id, item_ids).await,
         }
     }
 
@@ -325,71 +338,64 @@ impl UaClientManager {
         &self,
         connection_id: &str,
         subscription_id: u32,
-    ) -> Result<Vec<DataChangeEvent>, String> {
-        let conns = self.connections.lock().await;
-        let conn = conns
-            .get(connection_id)
-            .ok_or("Connection not found")?;
-
-        match &conn.backend {
-            ConnectionBackend::Simulator => {
-                let sub = conn
+    ) -> AppResult<Vec<DataChangeEvent>> {
+        match self.live_backend(connection_id).await? {
+            Some(client) => client.lock().await.poll_subscription(subscription_id),
+            None => {
+                let state = self.get_connection(connection_id).await?;
+                let guard = state.read().await;
+                let sub = guard
                     .subscriptions
                     .get(&subscription_id)
-                    .ok_or("Subscription not found")?;
+                    .ok_or_else(|| AppError::not_found("Subscription not found"))?;
                 Ok(self.simulator.poll_values(subscription_id, &sub.items))
             }
-            ConnectionBackend::Live(client) => client.poll_subscription(subscription_id),
         }
     }
 
-    pub async fn get_subscriptions(
-        &self,
-        connection_id: &str,
-    ) -> Result<Vec<SubscriptionInfo>, String> {
-        let conns = self.connections.lock().await;
-        let conn = conns
-            .get(connection_id)
-            .ok_or("Connection not found")?;
-
-        match &conn.backend {
-            ConnectionBackend::Simulator => Ok(conn
-                .subscriptions
-                .iter()
-                .map(|(id, state)| SubscriptionInfo {
-                    id: *id,
-                    publishing_interval: state.info.publishing_interval,
-                    monitored_items: state
-                        .items
-                        .iter()
-                        .map(|(item_id, node_id, display_name)| MonitoredItemInfo {
-                            id: *item_id,
-                            node_id: node_id.clone(),
-                            display_name: display_name.clone(),
-                            sampling_interval: state.info.publishing_interval,
-                        })
-                        .collect(),
-                })
-                .collect()),
-            ConnectionBackend::Live(client) => Ok(client.get_subscriptions()),
+    pub async fn get_subscriptions(&self, connection_id: &str) -> AppResult<Vec<SubscriptionInfo>> {
+        match self.live_backend(connection_id).await? {
+            Some(client) => {
+                let mut client = client.lock().await;
+                client.sync_subscription_bindings();
+                Ok(client.get_subscriptions())
+            }
+            None => {
+                let state = self.get_connection(connection_id).await?;
+                let guard = state.read().await;
+                Ok(guard
+                    .subscriptions
+                    .iter()
+                    .map(|(id, state)| SubscriptionInfo {
+                        id: *id,
+                        publishing_interval: state.info.publishing_interval,
+                        monitored_items: state
+                            .items
+                            .iter()
+                            .map(|(item_id, node_id, display_name)| MonitoredItemInfo {
+                                id: *item_id,
+                                node_id: node_id.clone(),
+                                display_name: display_name.clone(),
+                                sampling_interval: state.info.publishing_interval,
+                            })
+                            .collect(),
+                    })
+                    .collect())
+            }
         }
     }
-
-    // ─── Method Calls ────────────────────────────────────────────
 
     pub async fn get_method_info(
         &self,
         connection_id: &str,
         method_node_id: &str,
-    ) -> Result<MethodInfo, String> {
-        let conns = self.connections.lock().await;
-        let conn = conns
-            .get(connection_id)
-            .ok_or_else(|| "Connection not found".to_string())?;
-
-        match &conn.backend {
-            ConnectionBackend::Simulator => self.simulator.get_method_info(method_node_id),
-            ConnectionBackend::Live(client) => client.get_method_info(method_node_id).await,
+    ) -> AppResult<MethodInfo> {
+        match self.live_backend(connection_id).await? {
+            Some(client) => client.lock().await.get_method_info(method_node_id).await,
+            None => self
+                .simulator
+                .get_method_info(method_node_id)
+                .map_err(AppError::opcua),
         }
     }
 
@@ -397,29 +403,17 @@ impl UaClientManager {
         &self,
         connection_id: &str,
         request: &CallMethodRequest,
-    ) -> Result<CallMethodResult, String> {
-        let conns = self.connections.lock().await;
-        let conn = conns
-            .get(connection_id)
-            .ok_or_else(|| "Connection not found".to_string())?;
-
-        match &conn.backend {
-            ConnectionBackend::Simulator => self.simulator.call_method(request),
-            ConnectionBackend::Live(client) => client.call_method(request).await,
+    ) -> AppResult<CallMethodResult> {
+        match self.live_backend(connection_id).await? {
+            Some(client) => client.lock().await.call_method(request).await,
+            None => self.simulator.call_method(request).map_err(AppError::opcua),
         }
     }
 
-    // ─── Events ──────────────────────────────────────────────────
-
-    pub async fn poll_events(&self, connection_id: &str) -> Result<Vec<EventData>, String> {
-        let conns = self.connections.lock().await;
-        let conn = conns
-            .get(connection_id)
-            .ok_or_else(|| "Connection not found".to_string())?;
-
-        match &conn.backend {
-            ConnectionBackend::Simulator => Ok(self.simulator.generate_events()),
-            ConnectionBackend::Live(client) => Ok(client.poll_events()),
+    pub async fn poll_events(&self, connection_id: &str) -> AppResult<Vec<EventData>> {
+        match self.live_backend(connection_id).await? {
+            Some(client) => Ok(client.lock().await.poll_events()),
+            None => Ok(self.simulator.generate_events()),
         }
     }
 }

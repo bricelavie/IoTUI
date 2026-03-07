@@ -261,7 +261,7 @@ export const SettingsPanel: React.FC = () => {
         </Section>
 
         <p className="text-2xs text-iot-text-disabled text-center pt-2 pb-4">
-          Settings are applied immediately. Changes persist until the app is restarted.
+          Settings are applied immediately and now persist across app restarts.
         </p>
       </div>
     </Panel>

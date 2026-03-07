@@ -27,6 +27,7 @@ export interface ConnectionInfo {
   security_policy: string;
   security_mode: string;
   is_simulator: boolean;
+  last_error?: string | null;
 }
 
 export interface EndpointInfo {
@@ -109,6 +110,27 @@ export interface WriteResult {
   node_id: string;
   status_code: string;
   success: boolean;
+}
+
+export interface HistoryReadRequest {
+  node_id: string;
+  start_time?: string;
+  end_time?: string;
+  max_values?: number;
+}
+
+export interface HistoryValue {
+  value?: string;
+  data_type?: string;
+  status_code: string;
+  source_timestamp?: string;
+  server_timestamp?: string;
+}
+
+export interface HistoryReadResult {
+  node_id: string;
+  values: HistoryValue[];
+  continuation_point?: string;
 }
 
 // ─── Subscription Types ──────────────────────────────────────────
@@ -223,6 +245,7 @@ export interface MonitoredValue extends DataChangeEvent {
   numericValue?: number;
   previousValue?: string;
   unit?: string;
+  subscriptionKey?: string;
 }
 
 // ─── Event Types ─────────────────────────────────────────────────

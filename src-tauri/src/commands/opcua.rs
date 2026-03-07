@@ -1,7 +1,12 @@
 use crate::logging;
+use crate::error::AppResult;
 use crate::state::AppState;
 use crate::ua_client::types::*;
 use tauri::State;
+
+fn into_string_result<T>(result: AppResult<T>) -> Result<T, String> {
+    result.map_err(|err| err.to_string())
+}
 
 // ─── Connection Commands ─────────────────────────────────────────
 
@@ -10,7 +15,7 @@ pub async fn opcua_connect(
     state: State<'_, AppState>,
     config: ConnectionConfig,
 ) -> Result<String, String> {
-    state.ua_manager.connect(config).await
+    into_string_result(state.ua_manager.connect(config).await)
 }
 
 #[tauri::command]
@@ -18,7 +23,7 @@ pub async fn opcua_disconnect(
     state: State<'_, AppState>,
     connection_id: String,
 ) -> Result<(), String> {
-    state.ua_manager.disconnect(&connection_id).await
+    into_string_result(state.ua_manager.disconnect(&connection_id).await)
 }
 
 #[tauri::command]
@@ -26,7 +31,7 @@ pub async fn opcua_discover_endpoints(
     state: State<'_, AppState>,
     url: String,
 ) -> Result<Vec<EndpointInfo>, String> {
-    state.ua_manager.discover_endpoints(&url).await
+    into_string_result(state.ua_manager.discover_endpoints(&url).await)
 }
 
 #[tauri::command]
@@ -41,7 +46,7 @@ pub async fn opcua_get_connection_status(
     state: State<'_, AppState>,
     connection_id: String,
 ) -> Result<ConnectionStatus, String> {
-    state.ua_manager.get_status(&connection_id).await
+    into_string_result(state.ua_manager.get_status(&connection_id).await)
 }
 
 // ─── Browse Commands ─────────────────────────────────────────────
@@ -52,7 +57,7 @@ pub async fn opcua_browse(
     connection_id: String,
     node_id: String,
 ) -> Result<Vec<BrowseNode>, String> {
-    state.ua_manager.browse(&connection_id, &node_id).await
+    into_string_result(state.ua_manager.browse(&connection_id, &node_id).await)
 }
 
 #[tauri::command]
@@ -61,10 +66,10 @@ pub async fn opcua_read_node_details(
     connection_id: String,
     node_id: String,
 ) -> Result<NodeDetails, String> {
-    state
+    into_string_result(state
         .ua_manager
         .read_node_details(&connection_id, &node_id)
-        .await
+        .await)
 }
 
 // ─── Read/Write Commands ─────────────────────────────────────────
@@ -75,10 +80,10 @@ pub async fn opcua_read_values(
     connection_id: String,
     node_ids: Vec<String>,
 ) -> Result<Vec<ReadResult>, String> {
-    state
+    into_string_result(state
         .ua_manager
         .read_values(&connection_id, &node_ids)
-        .await
+        .await)
 }
 
 #[tauri::command]
@@ -87,10 +92,22 @@ pub async fn opcua_write_value(
     connection_id: String,
     request: WriteRequest,
 ) -> Result<WriteResult, String> {
-    state
+    into_string_result(state
         .ua_manager
         .write_value(&connection_id, &request)
-        .await
+        .await)
+}
+
+#[tauri::command]
+pub async fn opcua_read_history(
+    state: State<'_, AppState>,
+    connection_id: String,
+    request: HistoryReadRequest,
+) -> Result<HistoryReadResult, String> {
+    into_string_result(state
+        .ua_manager
+        .read_history(&connection_id, &request)
+        .await)
 }
 
 // ─── Subscription Commands ───────────────────────────────────────
@@ -101,10 +118,10 @@ pub async fn opcua_create_subscription(
     connection_id: String,
     request: CreateSubscriptionRequest,
 ) -> Result<CreateSubscriptionResult, String> {
-    state
+    into_string_result(state
         .ua_manager
         .create_subscription(&connection_id, &request)
-        .await
+        .await)
 }
 
 #[tauri::command]
@@ -114,10 +131,10 @@ pub async fn opcua_add_monitored_items(
     subscription_id: u32,
     items: Vec<MonitoredItemRequest>,
 ) -> Result<Vec<u32>, String> {
-    state
+    into_string_result(state
         .ua_manager
         .add_monitored_items(&connection_id, subscription_id, &items)
-        .await
+        .await)
 }
 
 #[tauri::command]
@@ -126,10 +143,10 @@ pub async fn opcua_delete_subscription(
     connection_id: String,
     subscription_id: u32,
 ) -> Result<(), String> {
-    state
+    into_string_result(state
         .ua_manager
         .delete_subscription(&connection_id, subscription_id)
-        .await
+        .await)
 }
 
 #[tauri::command]
@@ -138,10 +155,10 @@ pub async fn opcua_poll_subscription(
     connection_id: String,
     subscription_id: u32,
 ) -> Result<Vec<DataChangeEvent>, String> {
-    state
+    into_string_result(state
         .ua_manager
         .poll_subscription(&connection_id, subscription_id)
-        .await
+        .await)
 }
 
 #[tauri::command]
@@ -149,10 +166,10 @@ pub async fn opcua_get_subscriptions(
     state: State<'_, AppState>,
     connection_id: String,
 ) -> Result<Vec<SubscriptionInfo>, String> {
-    state
+    into_string_result(state
         .ua_manager
         .get_subscriptions(&connection_id)
-        .await
+        .await)
 }
 
 // ─── Method Calls ────────────────────────────────────────────────
@@ -163,10 +180,10 @@ pub async fn opcua_get_method_info(
     connection_id: String,
     method_node_id: String,
 ) -> Result<MethodInfo, String> {
-    state
+    into_string_result(state
         .ua_manager
         .get_method_info(&connection_id, &method_node_id)
-        .await
+        .await)
 }
 
 #[tauri::command]
@@ -175,10 +192,10 @@ pub async fn opcua_call_method(
     connection_id: String,
     request: CallMethodRequest,
 ) -> Result<CallMethodResult, String> {
-    state
+    into_string_result(state
         .ua_manager
         .call_method(&connection_id, &request)
-        .await
+        .await)
 }
 
 #[tauri::command]
@@ -188,10 +205,10 @@ pub async fn opcua_remove_monitored_items(
     subscription_id: u32,
     item_ids: Vec<u32>,
 ) -> Result<(), String> {
-    state
+    into_string_result(state
         .ua_manager
         .remove_monitored_items(&connection_id, subscription_id, &item_ids)
-        .await
+        .await)
 }
 
 // ─── Events ──────────────────────────────────────────────────────
@@ -201,7 +218,7 @@ pub async fn opcua_poll_events(
     state: State<'_, AppState>,
     connection_id: String,
 ) -> Result<Vec<EventData>, String> {
-    state.ua_manager.poll_events(&connection_id).await
+    into_string_result(state.ua_manager.poll_events(&connection_id).await)
 }
 
 // ─── Logging ─────────────────────────────────────────────────────

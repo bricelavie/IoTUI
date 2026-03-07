@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use rand::Rng;
 use std::collections::HashMap;
 
@@ -419,6 +419,7 @@ impl OpcUaSimulator {
 
         let (display_name, description, node_class, data_type, value, access) =
             self.get_node_info(node_id, t);
+        let historizing = data_type.is_some();
 
         let mut attributes = vec![
             attr("NodeId", node_id, "NodeId"),
@@ -442,7 +443,11 @@ impl OpcUaSimulator {
             attributes.push(attr("AccessLevel", &format!("{}", access), "Byte"));
             attributes.push(attr("UserAccessLevel", &format!("{}", access), "Byte"));
             attributes.push(attr("MinimumSamplingInterval", "100", "Double"));
-            attributes.push(attr("Historizing", "false", "Boolean"));
+            attributes.push(attr(
+                "Historizing",
+                if historizing { "true" } else { "false" },
+                "Boolean",
+            ));
             attributes.push(attr("ValueRank", "-1", "Int32"));
         }
 
@@ -462,7 +467,7 @@ impl OpcUaSimulator {
             access_level: Some(access),
             user_access_level: Some(access),
             minimum_sampling_interval: Some(100.0),
-            historizing: Some(false),
+            historizing: Some(historizing),
             value_rank: Some(-1),
             attributes,
             references,
@@ -498,6 +503,48 @@ impl OpcUaSimulator {
             node_id: request.node_id.clone(),
             status_code: "Good".to_string(),
             success: true,
+        }
+    }
+
+    pub fn read_history(&self, request: &HistoryReadRequest) -> HistoryReadResult {
+        let end = request
+            .end_time
+            .as_deref()
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.with_timezone(&Utc))
+            .unwrap_or_else(Utc::now);
+        let max_values = request.max_values.unwrap_or(120).clamp(1, 5_000) as usize;
+        let start = request
+            .start_time
+            .as_deref()
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.with_timezone(&Utc))
+            .unwrap_or_else(|| end - Duration::minutes(max_values.min(240) as i64));
+        let span_ms = (end - start).num_milliseconds().max(1);
+        let values = (0..max_values)
+            .map(|idx| {
+                let ratio = if max_values <= 1 {
+                    1.0
+                } else {
+                    idx as f64 / (max_values - 1) as f64
+                };
+                let ts = start + Duration::milliseconds((span_ms as f64 * ratio) as i64);
+                let t = (ts - self.start_time).num_milliseconds() as f64 / 1000.0;
+                let (_, _, _, data_type, value, _) = self.get_node_info(&request.node_id, t);
+                HistoryValue {
+                    value,
+                    data_type,
+                    status_code: "Good".to_string(),
+                    source_timestamp: Some(ts.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()),
+                    server_timestamp: Some(ts.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()),
+                }
+            })
+            .collect();
+
+        HistoryReadResult {
+            node_id: request.node_id.clone(),
+            values,
+            continuation_point: None,
         }
     }
 
@@ -971,7 +1018,7 @@ impl OpcUaSimulator {
                 output_arguments: vec!["Reset completed successfully".to_string()],
             }),
             n if n.ends_with(".Calibrate") => {
-                let axis = request
+                let _axis = request
                     .input_arguments
                     .first()
                     .map(|a| a.value.as_str())

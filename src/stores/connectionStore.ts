@@ -8,6 +8,29 @@ import type {
 import * as opcua from "@/services/opcua";
 import { log } from "@/services/logger";
 
+const CONNECTION_STATE_KEY = "iotui_connection_state_v1";
+
+function loadPersistedConnectionState() {
+  try {
+    const raw = localStorage.getItem(CONNECTION_STATE_KEY);
+    if (!raw) return { activeConnectionId: null as string | null };
+    const parsed = JSON.parse(raw);
+    return {
+      activeConnectionId:
+        typeof parsed.activeConnectionId === "string" ? parsed.activeConnectionId : null,
+    };
+  } catch {
+    return { activeConnectionId: null as string | null };
+  }
+}
+
+function persistConnectionState(activeConnectionId: string | null) {
+  localStorage.setItem(
+    CONNECTION_STATE_KEY,
+    JSON.stringify({ activeConnectionId })
+  );
+}
+
 interface ConnectionStore {
   // State
   connections: ConnectionInfo[];
@@ -23,12 +46,13 @@ interface ConnectionStore {
   disconnect: (id: string) => Promise<void>;
   setActiveConnection: (id: string | null) => void;
   refreshConnections: () => Promise<void>;
+  refreshStatusForActiveConnection: () => Promise<void>;
   clearError: () => void;
 }
 
 export const useConnectionStore = create<ConnectionStore>((set, get) => ({
   connections: [],
-  activeConnectionId: null,
+  activeConnectionId: loadPersistedConnectionState().activeConnectionId,
   endpoints: [],
   isConnecting: false,
   isDiscovering: false,
@@ -41,6 +65,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       set({ endpoints, isDiscovering: false });
     } catch (e) {
       set({ error: String(e), isDiscovering: false });
+      throw e;
     }
   },
 
@@ -56,6 +81,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
         activeConnectionId: id,
         isConnecting: false,
       });
+      persistConnectionState(id);
       return id;
     } catch (e) {
       log("error", "connection", "connect", `Connection failed: ${String(e)}`);
@@ -75,6 +101,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
         connections,
         activeConnectionId: activeConnectionId === id ? null : activeConnectionId,
       });
+      persistConnectionState(activeConnectionId === id ? null : activeConnectionId);
     } catch (e) {
       log("error", "connection", "disconnect", `Disconnect failed: ${String(e)}`);
       set({ error: String(e) });
@@ -82,13 +109,32 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
   },
 
   setActiveConnection: (id: string | null) => {
+    persistConnectionState(id);
     set({ activeConnectionId: id });
   },
 
   refreshConnections: async () => {
     try {
       const connections = await opcua.getConnections();
-      set({ connections });
+      const { activeConnectionId } = get();
+      const stillExists = connections.some((conn) => conn.id === activeConnectionId);
+      const nextActive = stillExists ? activeConnectionId : connections[0]?.id ?? null;
+      persistConnectionState(nextActive);
+      set({ connections, activeConnectionId: nextActive });
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  refreshStatusForActiveConnection: async () => {
+    const { activeConnectionId, connections } = get();
+    if (!activeConnectionId) return;
+    try {
+      const status = await opcua.getConnectionStatus(activeConnectionId);
+      const nextConnections = connections.map((conn) =>
+        conn.id === activeConnectionId ? { ...conn, status } : conn
+      );
+      set({ connections: nextConnections });
     } catch (e) {
       set({ error: String(e) });
     }

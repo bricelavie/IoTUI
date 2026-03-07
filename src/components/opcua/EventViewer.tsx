@@ -46,9 +46,12 @@ export const EventViewer: React.FC = () => {
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [showFilterPanel, setShowFilterPanel] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const inFlightRef = useRef(false);
 
   const pollEvents = useCallback(async () => {
     if (!activeConnectionId) return;
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     try {
       const newEvents = await opcua.pollEvents(activeConnectionId);
       setEvents((prev) => {
@@ -57,6 +60,8 @@ export const EventViewer: React.FC = () => {
       });
     } catch {
       // Silently ignore poll errors
+    } finally {
+      inFlightRef.current = false;
     }
   }, [activeConnectionId, maxEventEntries]);
 
