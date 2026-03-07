@@ -4,7 +4,7 @@ import { useBrowserStore } from "@/stores/browserStore";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
 import { useAppStore } from "@/stores/appStore";
-import { Panel, Spinner, EmptyState, Button } from "@/components/ui";
+import { Panel, Spinner, EmptyState } from "@/components/ui";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/ContextMenu";
 import { MonitorDialog } from "@/components/opcua/MonitorDialog";
 import { toast } from "@/stores/notificationStore";
@@ -26,6 +26,7 @@ import {
   History,
 } from "lucide-react";
 import type { TreeNodeState, BrowseNode } from "@/types/opcua";
+import { inferMethodParent } from "@/utils/opcua";
 
 const nodeClassIcons: Record<string, React.ReactNode> = {
   Object: <Folder size={14} className="text-iot-amber" />,
@@ -81,6 +82,10 @@ const TreeNode: React.FC<TreeNodeProps> = React.memo(
     return (
       <div>
         <div
+          role="treeitem"
+          tabIndex={0}
+          aria-selected={selectedNodeId === node.node_id}
+          aria-expanded={node.has_children ? expanded : undefined}
           className={clsx(
             "tree-node group",
             selectedNodeId === node.node_id && "active"
@@ -88,6 +93,18 @@ const TreeNode: React.FC<TreeNodeProps> = React.memo(
           style={{ paddingLeft: `${depth * 16 + 8}px` }}
           onClick={() => onSelect(node.node_id)}
           onContextMenu={(e) => onContextMenu(e, node)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onSelect(node.node_id);
+            } else if (e.key === "ArrowRight" && node.has_children && !expanded) {
+              e.preventDefault();
+              onExpand(node.node_id);
+            } else if (e.key === "ArrowLeft" && expanded) {
+              e.preventDefault();
+              onCollapse(node.node_id);
+            }
+          }}
         >
           {/* Expand/collapse chevron */}
           {node.has_children ? (
@@ -192,18 +209,6 @@ function getContextMenuItems(node: BrowseNode): ContextMenuItem[] {
   return items;
 }
 
-function inferMethodParent(nodeId: string): string | undefined {
-  const marker = ";s=";
-  const idx = nodeId.indexOf(marker);
-  if (idx < 0) return undefined;
-  const prefix = nodeId.slice(0, idx + marker.length);
-  const body = nodeId.slice(idx + marker.length);
-  const parts = body.split(".");
-  if (parts.length <= 1) return undefined;
-  parts.pop();
-  return prefix + parts.join(".");
-}
-
 export const AddressSpaceTree: React.FC = () => {
   const { activeConnectionId } = useConnectionStore();
   const {
@@ -220,7 +225,7 @@ export const AddressSpaceTree: React.FC = () => {
   const { subscriptions, getAllMonitoredNodeIds } =
     useSubscriptionStore();
 
-  const { menuPosition, menuData, showMenu, closeMenu } = useContextMenu();
+  const { menuPosition, menuData, showMenu, closeMenu } = useContextMenu<BrowseNode>();
 
   // Monitor dialog state
   const [monitorDialogOpen, setMonitorDialogOpen] = useState(false);
@@ -233,7 +238,7 @@ export const AddressSpaceTree: React.FC = () => {
     if (activeConnectionId && tree.length === 0) {
       loadRootNodes(activeConnectionId);
     }
-  }, [activeConnectionId]);
+  }, [activeConnectionId, tree.length, loadRootNodes]);
 
   const handleExpand = useCallback(
     (nodeId: string) => {
@@ -269,7 +274,7 @@ export const AddressSpaceTree: React.FC = () => {
 
   const handleContextMenuAction = useCallback(
     async (actionId: string) => {
-      const node = menuData as BrowseNode | null;
+      const node = menuData;
       if (!node || !activeConnectionId) return;
 
       switch (actionId) {
@@ -312,7 +317,7 @@ export const AddressSpaceTree: React.FC = () => {
     [menuData, activeConnectionId, handleExpand, handleSelect]
   );
 
-  const contextNode = menuData as BrowseNode | null;
+  const contextNode = menuData;
 
   return (
     <Panel

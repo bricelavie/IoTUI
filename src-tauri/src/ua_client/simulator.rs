@@ -511,14 +511,14 @@ impl OpcUaSimulator {
             .end_time
             .as_deref()
             .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-            .map(|value| value.with_timezone(&Utc))
+            .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(Utc::now);
         let max_values = request.max_values.unwrap_or(120).clamp(1, 5_000) as usize;
         let start = request
             .start_time
             .as_deref()
             .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-            .map(|value| value.with_timezone(&Utc))
+            .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|| end - Duration::minutes(max_values.min(240) as i64));
         let span_ms = (end - start).num_milliseconds().max(1);
         let values = (0..max_values)
@@ -762,7 +762,7 @@ impl OpcUaSimulator {
             "ns=0;i=2255" => ("NamespaceArray".into(), "".into(), "Variable".into(), Some("String".into()), Some("[\"http://opcfoundation.org/UA/\", \"urn:IoTUI:SimulatedServer\", \"urn:IoTUI:Plant\"]".into()), 1),
 
             // ─── Line 1 status ──────────────────────────────
-            "ns=2;s=Line1.Status" => ("Line Status".into(), "Production line 1 operating status".into(), "Variable".into(), Some("String".into()), written.map(|v| v).or(Some("Running".into())), 3),
+            "ns=2;s=Line1.Status" => ("Line Status".into(), "Production line 1 operating status".into(), "Variable".into(), Some("String".into()), written.or(Some("Running".into())), 3),
             "ns=2;s=Line1.ProductCount" => ("Product Count".into(), "Total products on line 1".into(), "Variable".into(), Some("UInt32".into()), Some(format!("{}", 8940 + (t / 12.0) as u64)), 1),
             "ns=2;s=Line1.OEE" => ("OEE".into(), "Overall Equipment Effectiveness".into(), "Variable".into(), Some("Double".into()), Some(format!("{:.1}", 87.3 + (t * 0.01).sin() * 2.0 + n())), 1),
             "ns=2;s=Line1.CycleTime" => ("Cycle Time".into(), "Average cycle time (seconds)".into(), "Variable".into(), Some("Double".into()), Some(format!("{:.2}", 4.82 + (t * 0.05).sin() * 0.3 + n() * 0.1)), 1),
@@ -774,7 +774,7 @@ impl OpcUaSimulator {
             "ns=2;s=Line1.Robot1.Position" => ("Joint Position".into(), "Current joint angle (degrees)".into(), "Variable".into(), Some("Double".into()), Some(format!("{:.2}", 145.0 + (t * 0.1).sin() * 30.0)), 3),
             "ns=2;s=Line1.Robot1.Current" => ("Motor Current".into(), "Motor current draw (A)".into(), "Variable".into(), Some("Double".into()), Some(format!("{:.2}", 12.4 + (t * 0.03).sin() * 2.0 + n() * 0.3)), 1),
             "ns=2;s=Line1.Robot1.Vibration" => ("Vibration".into(), "Vibration level (mm/s)".into(), "Variable".into(), Some("Double".into()), Some(format!("{:.3}", 0.82 + (t * 0.05).sin() * 0.2 + n() * 0.05)), 1),
-            "ns=2;s=Line1.Robot1.Status" => ("Operating Status".into(), "0=Idle, 1=Running, 2=Error".into(), "Variable".into(), Some("Int32".into()), written.map(|v| v).or(Some("1".into())), 3),
+            "ns=2;s=Line1.Robot1.Status" => ("Operating Status".into(), "0=Idle, 1=Running, 2=Error".into(), "Variable".into(), Some("Int32".into()), written.or(Some("1".into())), 3),
             "ns=2;s=Line1.Robot1.Hours" => ("Operating Hours".into(), "Total operating hours".into(), "Variable".into(), Some("Double".into()), Some(format!("{:.1}", 12847.3 + t / 3600.0)), 1),
             "ns=2;s=Line1.Robot1.Errors" => ("Error Count".into(), "Total error count".into(), "Variable".into(), Some("UInt32".into()), Some("3".into()), 1),
 
@@ -785,15 +785,15 @@ impl OpcUaSimulator {
             "ns=2;s=Line1.Robot2.Position" => ("Joint Position".into(), "Current joint angle (degrees)".into(), "Variable".into(), Some("Double".into()), Some(format!("{:.2}", 90.0 + (t * 0.08).sin() * 45.0)), 3),
             "ns=2;s=Line1.Robot2.Current" => ("Motor Current".into(), "Motor current draw (A)".into(), "Variable".into(), Some("Double".into()), Some(format!("{:.2}", 10.8 + (t * 0.025).sin() * 1.5 + n() * 0.2)), 1),
             "ns=2;s=Line1.Robot2.Vibration" => ("Vibration".into(), "Vibration level (mm/s)".into(), "Variable".into(), Some("Double".into()), Some(format!("{:.3}", 0.65 + (t * 0.06).sin() * 0.15 + n() * 0.03)), 1),
-            "ns=2;s=Line1.Robot2.Status" => ("Operating Status".into(), "0=Idle, 1=Running, 2=Error".into(), "Variable".into(), Some("Int32".into()), written.map(|v| v).or(Some("1".into())), 3),
+            "ns=2;s=Line1.Robot2.Status" => ("Operating Status".into(), "0=Idle, 1=Running, 2=Error".into(), "Variable".into(), Some("Int32".into()), written.or(Some("1".into())), 3),
             "ns=2;s=Line1.Robot2.Hours" => ("Operating Hours".into(), "Total operating hours".into(), "Variable".into(), Some("Double".into()), Some(format!("{:.1}", 9234.7 + t / 3600.0)), 1),
             "ns=2;s=Line1.Robot2.Errors" => ("Error Count".into(), "Total error count".into(), "Variable".into(), Some("UInt32".into()), Some("11".into()), 1),
 
             // ─── Conveyor ───────────────────────────────────
-            "ns=2;s=Line1.Conveyor.Speed" => ("Belt Speed".into(), "Belt speed (m/min)".into(), "Variable".into(), Some("Double".into()), written.map(|v| v).or(Some(format!("{:.1}", 2.4 + (t * 0.01).sin() * 0.2 + n() * 0.05))), 3),
+            "ns=2;s=Line1.Conveyor.Speed" => ("Belt Speed".into(), "Belt speed (m/min)".into(), "Variable".into(), Some("Double".into()), written.or(Some(format!("{:.1}", 2.4 + (t * 0.01).sin() * 0.2 + n() * 0.05))), 3),
             "ns=2;s=Line1.Conveyor.Load" => ("Current Load".into(), "Belt load (kg)".into(), "Variable".into(), Some("Double".into()), Some(format!("{:.1}", 145.0 + (t * 0.02).sin() * 20.0 + n2())), 1),
             "ns=2;s=Line1.Conveyor.Temp" => ("Motor Temperature".into(), "Conveyor motor temperature (C)".into(), "Variable".into(), Some("Double".into()), Some(format!("{:.1}", 55.3 + (t * 0.01).sin() * 3.0 + n())), 1),
-            "ns=2;s=Line1.Conveyor.Running" => ("Is Running".into(), "Conveyor running state".into(), "Variable".into(), Some("Boolean".into()), written.map(|v| v).or(Some("true".into())), 3),
+            "ns=2;s=Line1.Conveyor.Running" => ("Is Running".into(), "Conveyor running state".into(), "Variable".into(), Some("Boolean".into()), written.or(Some("true".into())), 3),
             "ns=2;s=Line1.Conveyor.TotalDist" => ("Total Distance".into(), "Total belt travel (km)".into(), "Variable".into(), Some("Double".into()), Some(format!("{:.1}", 48723.4 + t * 0.04)), 1),
 
             // ─── PLC ────────────────────────────────────────
@@ -809,7 +809,7 @@ impl OpcUaSimulator {
             "ns=2;s=Line2.ProductCount" => ("Product Count".into(), "Products on line 2".into(), "Variable".into(), Some("UInt32".into()), Some(format!("{}", 5230 + (t / 18.0) as u64)), 1),
 
             // CNC Machine
-            "ns=2;s=Line2.CNC.SpindleSpeed" => ("Spindle Speed".into(), "Spindle rotation speed (RPM)".into(), "Variable".into(), Some("Double".into()), written.map(|v| v).or(Some(format!("{:.0}", 8944.0 + (t * 0.02).sin() * 200.0 + n2() * 5.0))), 3),
+            "ns=2;s=Line2.CNC.SpindleSpeed" => ("Spindle Speed".into(), "Spindle rotation speed (RPM)".into(), "Variable".into(), Some("Double".into()), written.or(Some(format!("{:.0}", 8944.0 + (t * 0.02).sin() * 200.0 + n2() * 5.0))), 3),
             "ns=2;s=Line2.CNC.FeedRate" => ("Feed Rate".into(), "Feed rate (mm/min)".into(), "Variable".into(), Some("Double".into()), Some(format!("{:.0}", 450.0 + (t * 0.03).sin() * 30.0)), 1),
             "ns=2;s=Line2.CNC.SpindleTemp" => ("Spindle Temperature".into(), "Spindle bearing temperature (C)".into(), "Variable".into(), Some("Double".into()), Some(format!("{:.1}", 48.7 + (t * 0.01).sin() * 5.0 + n())), 1),
             "ns=2;s=Line2.CNC.CoolantTemp" => ("Coolant Temperature".into(), "Coolant temperature (C)".into(), "Variable".into(), Some("Double".into()), Some(format!("{:.1}", 22.3 + (t * 0.008).sin() * 2.0 + n() * 0.3)), 1),
@@ -829,7 +829,7 @@ impl OpcUaSimulator {
 
             // Curing Oven
             "ns=2;s=Line2.Oven.Temp" => ("Temperature".into(), "Oven temperature (C)".into(), "Variable".into(), Some("Double".into()), Some(format!("{:.1}", 178.5 + (t * 0.003).sin() * 2.0 + n() * 0.5)), 1),
-            "ns=2;s=Line2.Oven.SetPoint" => ("Set Point".into(), "Temperature set point (C)".into(), "Variable".into(), Some("Double".into()), written.map(|v| v).or(Some("180.0".into())), 3),
+            "ns=2;s=Line2.Oven.SetPoint" => ("Set Point".into(), "Temperature set point (C)".into(), "Variable".into(), Some("Double".into()), written.or(Some("180.0".into())), 3),
             "ns=2;s=Line2.Oven.Humidity" => ("Humidity".into(), "Oven humidity (%)".into(), "Variable".into(), Some("Double".into()), Some(format!("{:.1}", 12.0 + (t * 0.01).sin() * 3.0 + n() * 0.5)), 1),
             "ns=2;s=Line2.Oven.FanSpeed" => ("Fan Speed".into(), "Circulation fan speed (RPM)".into(), "Variable".into(), Some("Double".into()), Some(format!("{:.0}", 1200.0 + n2() * 10.0)), 1),
             "ns=2;s=Line2.Oven.DoorOpen" => ("Door Open".into(), "Oven door state".into(), "Variable".into(), Some("Boolean".into()), Some("false".into()), 1),

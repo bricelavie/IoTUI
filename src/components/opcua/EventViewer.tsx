@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { Badge, EmptyState, Button } from "@/components/ui";
-import { AlertTriangle, Pause, Play, Trash2, Filter, ChevronDown } from "lucide-react";
+import { AlertTriangle, Pause, Play, Trash2, Filter } from "lucide-react";
 import * as opcua from "@/services/opcua";
 import { useSettingsStore } from "@/stores/settingsStore";
 import type { EventData } from "@/types/opcua";
+import { errorMessage } from "@/types/opcua";
 
 type SeverityFilter = "all" | "low" | "medium" | "high" | "critical";
 
@@ -42,6 +43,7 @@ export const EventViewer: React.FC = () => {
   const eventPollInterval = useSettingsStore((s) => s.eventPollInterval);
   const [events, setEvents] = useState<EventData[]>([]);
   const [isPolling, setIsPolling] = useState(true);
+  const [pollError, setPollError] = useState<string | null>(null);
   const [filter, setFilter] = useState<SeverityFilter>("all");
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [showFilterPanel, setShowFilterPanel] = useState(false);
@@ -54,12 +56,13 @@ export const EventViewer: React.FC = () => {
     inFlightRef.current = true;
     try {
       const newEvents = await opcua.pollEvents(activeConnectionId);
+      setPollError(null);
       setEvents((prev) => {
         const combined = [...newEvents, ...prev];
         return combined.slice(0, maxEventEntries);
       });
-    } catch {
-      // Silently ignore poll errors
+    } catch (err) {
+      setPollError(errorMessage(err));
     } finally {
       inFlightRef.current = false;
     }
@@ -158,6 +161,14 @@ export const EventViewer: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* Poll error banner */}
+      {pollError && (
+        <div className="px-4 py-2 bg-iot-red/10 border-b border-iot-red/20 text-xs text-iot-red flex items-center gap-2 flex-shrink-0">
+          <AlertTriangle size={12} />
+          Event poll failed: {pollError}
+        </div>
+      )}
 
       {/* Filter panel */}
       {showFilterPanel && (

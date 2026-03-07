@@ -1,19 +1,36 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, memo } from "react";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
 import { useAppStore } from "@/stores/appStore";
 import { Clock, Database, Activity, Zap } from "lucide-react";
 
-export const StatusBar: React.FC = () => {
-  const { connections, activeConnectionId } = useConnectionStore();
-  const { subscriptions, monitoredValues, activePollers, activeSubscriptionId, getSubStatus } = useSubscriptionStore();
-  const { activeProtocol } = useAppStore();
+/** Isolated clock component so its 1 Hz re-renders don't propagate to the entire StatusBar. */
+const StatusClock: React.FC = memo(() => {
   const [time, setTime] = useState(new Date());
 
   useEffect(() => {
     const interval = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(interval);
   }, []);
+
+  return (
+    <span className="flex items-center gap-1">
+      <Clock size={10} />
+      {time.toLocaleTimeString()}
+    </span>
+  );
+});
+StatusClock.displayName = "StatusClock";
+
+export const StatusBar: React.FC = () => {
+  const connections = useConnectionStore((s) => s.connections);
+  const activeConnectionId = useConnectionStore((s) => s.activeConnectionId);
+  const subscriptions = useSubscriptionStore((s) => s.subscriptions);
+  const monitoredValues = useSubscriptionStore((s) => s.monitoredValues);
+  const activePollers = useSubscriptionStore((s) => s.activePollers);
+  const activeSubscriptionId = useSubscriptionStore((s) => s.activeSubscriptionId);
+  const getSubStatus = useSubscriptionStore((s) => s.getSubStatus);
+  const activeProtocol = useAppStore((s) => s.activeProtocol);
 
   const activeConn = connections.find((c) => c.id === activeConnectionId);
   const totalMonitored = subscriptions.reduce(
@@ -93,10 +110,7 @@ export const StatusBar: React.FC = () => {
           )}
           {backendType}
         </span>
-        <span className="flex items-center gap-1">
-          <Clock size={10} />
-          {time.toLocaleTimeString()}
-        </span>
+        <StatusClock />
       </div>
     </div>
   );

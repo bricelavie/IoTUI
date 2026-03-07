@@ -5,6 +5,7 @@ import type {
   MonitoredValue,
   SubscriptionInfo,
 } from "@/types/opcua";
+import { errorMessage } from "@/types/opcua";
 import * as opcua from "@/services/opcua";
 import { toast } from "@/stores/notificationStore";
 import { getSetting } from "@/stores/settingsStore";
@@ -22,6 +23,7 @@ interface PollController {
   lastError: string | null;
   lastSuccessAt: number | null;
   lastPollAt: number | null;
+  connectionId: string;
 }
 
 interface SubscriptionStore {
@@ -68,7 +70,7 @@ function monitoredValueKey(subscriptionId: number, nodeId: string) {
   return `${subscriptionId}::${nodeId}`;
 }
 
-function ensureController(subscriptionId: number): PollController {
+function ensureController(subscriptionId: number, connectionId: string): PollController {
   let controller = pollControllers.get(subscriptionId);
   if (!controller) {
     controller = {
@@ -77,9 +79,11 @@ function ensureController(subscriptionId: number): PollController {
       lastError: null,
       lastSuccessAt: null,
       lastPollAt: null,
+      connectionId,
     };
     pollControllers.set(subscriptionId, controller);
   }
+  controller.connectionId = connectionId;
   return controller;
 }
 
@@ -243,7 +247,7 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
   startPolling: (connectionId, subscriptionId) => {
     const sub = get().subscriptions.find((entry) => entry.id === subscriptionId);
     const interval = sub?.publishing_interval ?? getSetting("defaultPublishingInterval");
-    const controller = ensureController(subscriptionId);
+    const controller = ensureController(subscriptionId, connectionId);
 
     if (controller.timerId) {
       clearTimeout(controller.timerId);
@@ -263,11 +267,14 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
       controller.inFlight = true;
       controller.lastPollAt = Date.now();
       try {
-        const events = await opcua.pollSubscription(connectionId, subscriptionId);
+        const events = await opcua.pollSubscription(controller.connectionId, subscriptionId);
+        controller.lastError = null;
+        controller.lastSuccessAt = Date.now();
+
         const { monitoredValues, pollErrors, lastUpdateAt } = get();
-        const newValues = new Map(monitoredValues);
-        const newErrors = new Map(pollErrors);
-        const newUpdates = new Map(lastUpdateAt);
+
+        // Only clone Maps when there is actual work to do
+        const newValues = events.length > 0 ? new Map(monitoredValues) : monitoredValues;
 
         for (const event of events) {
           const key = monitoredValueKey(subscriptionId, event.node_id);
@@ -292,14 +299,21 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
           });
         }
 
-        controller.lastError = null;
-        controller.lastSuccessAt = Date.now();
-        newErrors.delete(subscriptionId);
-        newUpdates.set(subscriptionId, controller.lastSuccessAt);
+        // Only clone error/update Maps when there is actual change
+        const hadError = pollErrors.has(subscriptionId);
+        const newErrors = hadError ? new Map(pollErrors) : pollErrors;
+        if (hadError) newErrors.delete(subscriptionId);
+
+        // Only clone lastUpdateAt if the timestamp actually changed
+        const prevUpdate = lastUpdateAt.get(subscriptionId);
+        const newTimestamp = controller.lastSuccessAt;
+        const updatesChanged = prevUpdate !== newTimestamp;
+        const newUpdates = updatesChanged ? new Map(lastUpdateAt) : lastUpdateAt;
+        if (updatesChanged) newUpdates.set(subscriptionId, newTimestamp!);
 
         set({ monitoredValues: newValues, pollErrors: newErrors, lastUpdateAt: newUpdates });
       } catch (e) {
-        const message = String(e);
+        const message = errorMessage(e);
         controller.lastError = message;
         const nextErrors = new Map(get().pollErrors);
         nextErrors.set(subscriptionId, message);
@@ -307,14 +321,15 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
         log("warn", "subscription", "poll", `Polling failed for subscription ${subscriptionId}: ${message}`);
       } finally {
         controller.inFlight = false;
-        const activePollers = new Set(get().activePollers);
-        if (activePollers.has(subscriptionId)) {
+        // Avoid allocating a new Set just to check membership
+        if (get().activePollers.has(subscriptionId)) {
           schedule(interval);
         }
       }
     };
 
-    const activePollers = new Set(get().activePollers);
+    const prevPollers = get().activePollers;
+    const activePollers = new Set(prevPollers);
     activePollers.add(subscriptionId);
     set({ activePollers, activeSubscriptionId: subscriptionId });
     persistState({
@@ -327,20 +342,21 @@ export const useSubscriptionStore = create<SubscriptionStore>((set, get) => ({
   },
 
   stopPolling: (subscriptionId) => {
-    const activePollers = new Set(get().activePollers);
+    const prevPollers = get().activePollers;
 
     if (subscriptionId === undefined) {
-      for (const subId of activePollers) {
+      for (const subId of prevPollers) {
         clearController(subId);
       }
-      activePollers.clear();
       log("info", "subscription", "stopPolling", "All polling stopped");
-      set({ activePollers });
+      set({ activePollers: new Set() });
       return;
     }
 
-    if (activePollers.delete(subscriptionId)) {
+    if (prevPollers.has(subscriptionId)) {
       clearController(subscriptionId);
+      const activePollers = new Set(prevPollers);
+      activePollers.delete(subscriptionId);
       log("info", "subscription", "stopPolling", `Polling stopped for sub ${subscriptionId}`);
       set({ activePollers });
     }

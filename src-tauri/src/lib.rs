@@ -5,6 +5,7 @@ mod state;
 mod ua_client;
 
 use state::AppState;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -32,9 +33,18 @@ pub fn run() {
             commands::opcua::opcua_get_method_info,
             commands::opcua::opcua_remove_monitored_items,
             commands::opcua::opcua_poll_events,
-            commands::opcua::opcua_get_backend_logs,
-            commands::opcua::opcua_set_log_level,
+            commands::opcua::get_backend_logs,
+            commands::opcua::set_log_level,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Gracefully disconnect all active OPC UA sessions on shutdown
+                // to avoid orphaned server-side sessions lingering until timeout.
+                let state = app.state::<AppState>();
+                let rt = tokio::runtime::Handle::current();
+                rt.block_on(state.ua_manager.disconnect_all());
+            }
+        });
 }

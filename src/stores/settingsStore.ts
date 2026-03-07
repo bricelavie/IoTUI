@@ -60,6 +60,14 @@ const DEFAULTS: AppSettings = {
   normalToastDuration: 4000,
 };
 
+const SETTINGS_KEYS = Object.keys(DEFAULTS) as (keyof AppSettings)[];
+
+function pickSettings(state: SettingsStore): AppSettings {
+  return Object.fromEntries(
+    SETTINGS_KEYS.map((k) => [k, state[k]])
+  ) as unknown as AppSettings;
+}
+
 export const useSettingsStore = create<SettingsStore>((set) => ({
   ...DEFAULTS,
   ...(() => {
@@ -74,7 +82,7 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
   update: (partial) =>
     set((state) => {
       const next = { ...state, ...partial };
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(pickSettings(next)));
       return partial;
     }),
   reset: () => {

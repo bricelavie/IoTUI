@@ -3,6 +3,7 @@ import { useConnectionStore } from "@/stores/connectionStore";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
 import { Button, Badge, EmptyState } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ui/Modal";
+import { errorMessage } from "@/types/opcua";
 import { toast } from "@/stores/notificationStore";
 import {
   Plus,
@@ -13,8 +14,6 @@ import {
   Clock,
   Eye,
   Edit3,
-  Check,
-  X,
   ChevronRight,
   Radio,
 } from "lucide-react";
@@ -57,7 +56,7 @@ export const SubscriptionManager: React.FC = () => {
       setNewSubName("");
       setPublishingInterval("500");
     } catch (e) {
-      toast.error("Failed to create subscription", String(e));
+      toast.error("Failed to create subscription", errorMessage(e));
     }
     setIsCreating(false);
   };
@@ -67,7 +66,7 @@ export const SubscriptionManager: React.FC = () => {
     try {
       await deleteSubscription(activeConnectionId, subId);
     } catch (e) {
-      toast.error("Failed to delete subscription", String(e));
+      toast.error("Failed to delete subscription", errorMessage(e));
     }
     setDeleteTarget(null);
   };

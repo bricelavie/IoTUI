@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import type { BrowseNode, NodeDetails, TreeNodeState } from "@/types/opcua";
+import type { NodeDetails, TreeNodeState } from "@/types/opcua";
+import { errorMessage } from "@/types/opcua";
 import * as opcua from "@/services/opcua";
 import { toast } from "@/stores/notificationStore";
 import { log } from "@/services/logger";
@@ -109,7 +110,7 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
         void get().selectNode(connectionId, selectedNodeId);
       }
     } catch (e) {
-      toast.error("Browse failed", String(e));
+      toast.error("Browse failed", errorMessage(e));
     }
   },
 
@@ -144,7 +145,7 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
           loading: false,
         })),
       });
-      toast.error("Browse failed", String(e));
+      toast.error("Browse failed", errorMessage(e));
     }
   },
 
@@ -176,7 +177,7 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
       set({ selectedNodeDetails: details, isLoadingDetails: false, breadcrumbs });
     } catch (e) {
       set({ isLoadingDetails: false });
-      toast.error("Read details failed", String(e));
+      toast.error("Read details failed", errorMessage(e));
     }
   },
 

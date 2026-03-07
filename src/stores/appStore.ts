@@ -9,10 +9,31 @@ interface MethodTarget {
   objectNodeId?: string;
 }
 
-interface AppStore {
+interface PersistedState {
   activeProtocol: ProtocolType;
   activeView: ViewMode;
   sidebarCollapsed: boolean;
+}
+
+function loadPersistedAppState(): PersistedState {
+  try {
+    const saved = localStorage.getItem(APP_STATE_KEY);
+    const parsed = saved ? JSON.parse(saved) : {};
+    return {
+      activeProtocol: parsed.activeProtocol ?? "opcua",
+      activeView: parsed.activeView ?? "connection",
+      sidebarCollapsed: parsed.sidebarCollapsed ?? false,
+    };
+  } catch {
+    return { activeProtocol: "opcua", activeView: "connection", sidebarCollapsed: false };
+  }
+}
+
+function persistAppState(state: PersistedState) {
+  localStorage.setItem(APP_STATE_KEY, JSON.stringify(state));
+}
+
+interface AppStore extends PersistedState {
   methodTarget: MethodTarget | null;
   setActiveProtocol: (protocol: ProtocolType) => void;
   setActiveView: (view: ViewMode) => void;
@@ -21,62 +42,28 @@ interface AppStore {
 }
 
 export const useAppStore = create<AppStore>((set) => ({
-  ...(() => {
-    try {
-      const saved = localStorage.getItem(APP_STATE_KEY);
-      const parsed = saved ? JSON.parse(saved) : {};
-      return {
-        activeProtocol: parsed.activeProtocol ?? "opcua",
-        activeView: parsed.activeView ?? "connection",
-        sidebarCollapsed: parsed.sidebarCollapsed ?? false,
-      };
-    } catch {
-      return {
-        activeProtocol: "opcua",
-        activeView: "connection",
-        sidebarCollapsed: false,
-      };
-    }
-  })(),
+  ...loadPersistedAppState(),
   methodTarget: null,
   setActiveProtocol: (protocol) =>
     set((state) => {
-      localStorage.setItem(
-        APP_STATE_KEY,
-        JSON.stringify({
-          activeProtocol: protocol,
-          activeView: state.activeView,
-          sidebarCollapsed: state.sidebarCollapsed,
-        })
-      );
+      const next = { ...state, activeProtocol: protocol };
+      persistAppState(next);
       return { activeProtocol: protocol };
     }),
   setActiveView: (view) => {
     log("debug", "action", "setActiveView", `Navigate to ${view}`);
     set((state) => {
-      localStorage.setItem(
-        APP_STATE_KEY,
-        JSON.stringify({
-          activeProtocol: state.activeProtocol,
-          activeView: view,
-          sidebarCollapsed: state.sidebarCollapsed,
-        })
-      );
+      const next = { ...state, activeView: view };
+      persistAppState(next);
       return { activeView: view };
     });
   },
   toggleSidebar: () =>
     set((state) => {
-      const next = !state.sidebarCollapsed;
-      localStorage.setItem(
-        APP_STATE_KEY,
-        JSON.stringify({
-          activeProtocol: state.activeProtocol,
-          activeView: state.activeView,
-          sidebarCollapsed: next,
-        })
-      );
-      return { sidebarCollapsed: next };
+      const sidebarCollapsed = !state.sidebarCollapsed;
+      const next = { ...state, sidebarCollapsed };
+      persistAppState(next);
+      return { sidebarCollapsed };
     }),
   setMethodTarget: (target) => set({ methodTarget: target }),
 }));

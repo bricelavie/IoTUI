@@ -1,4 +1,5 @@
 import React, { useMemo, useState, useCallback } from "react";
+import { useContainerWidth } from "@/hooks/useContainerWidth";
 import { clsx } from "clsx";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
@@ -6,6 +7,7 @@ import { useAppStore } from "@/stores/appStore";
 import { Panel, Badge, EmptyState, Button } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ui/Modal";
 import { toast } from "@/stores/notificationStore";
+import { theme } from "@/utils/theme";
 import {
   Trash2,
   Activity,
@@ -22,18 +24,39 @@ import {
 import { Sparkline } from "@/components/charts/Sparkline";
 import { RealtimeChart } from "@/components/charts/RealtimeChart";
 import type { MonitoredValue } from "@/types/opcua";
+import { errorMessage } from "@/types/opcua";
+import { computeStats } from "@/utils/stats";
 
 type SortField = "name" | "value" | "type" | "status" | "timestamp";
 type SortDir = "asc" | "desc";
 
-function computeStats(history: { timestamp: number; value: number }[]) {
-  if (history.length === 0) return { min: 0, max: 0, avg: 0, count: 0 };
-  const values = history.map((h) => h.value);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const avg = values.reduce((a, b) => a + b, 0) / values.length;
-  return { min, max, avg, count: values.length };
+interface SortHeaderProps {
+  field: SortField;
+  sortField: SortField;
+  sortDir: SortDir;
+  onSort: (field: SortField) => void;
+  children: React.ReactNode;
 }
+
+const SortHeader: React.FC<SortHeaderProps> = ({ field, sortField, sortDir, onSort, children }) => (
+  <th
+    className="px-3 py-2 font-medium cursor-pointer select-none hover:text-iot-text-secondary transition-colors group"
+    onClick={() => onSort(field)}
+  >
+    <span className="inline-flex items-center gap-1">
+      {children}
+      {sortField === field ? (
+        sortDir === "asc" ? (
+          <ArrowUp size={10} className="text-iot-cyan" />
+        ) : (
+          <ArrowDown size={10} className="text-iot-cyan" />
+        )
+      ) : (
+        <ArrowUp size={10} className="text-iot-text-disabled opacity-0 group-hover:opacity-50" />
+      )}
+    </span>
+  </th>
+);
 
 export const MonitoredItemsTable: React.FC = () => {
   const { activeConnectionId } = useConnectionStore();
@@ -54,7 +77,7 @@ export const MonitoredItemsTable: React.FC = () => {
   const activeSub = subscriptions.find((s) => s.id === activeSubscriptionId);
   const monitoredItems = activeSub?.monitored_items ?? [];
   const { setActiveView } = useAppStore();
-  const { subscriptionMeta, getSubscriptionName } = useSubscriptionStore();
+  const { getSubscriptionName } = useSubscriptionStore();
   const activeSubName = activeSubscriptionId
     ? getSubscriptionName(activeSubscriptionId)
     : "";
@@ -116,33 +139,10 @@ export const MonitoredItemsTable: React.FC = () => {
     try {
       await removeMonitoredItem(activeConnectionId, activeSubscriptionId, removeTarget.id, removeTarget.nodeId);
     } catch (e) {
-      toast.error("Remove failed", String(e));
+      toast.error("Remove failed", errorMessage(e));
     }
     setRemoveTarget(null);
   };
-
-  const SortHeader: React.FC<{
-    field: SortField;
-    children: React.ReactNode;
-  }> = ({ field, children }) => (
-    <th
-      className="px-3 py-2 font-medium cursor-pointer select-none hover:text-iot-text-secondary transition-colors group"
-      onClick={() => handleSort(field)}
-    >
-      <span className="inline-flex items-center gap-1">
-        {children}
-        {sortField === field ? (
-          sortDir === "asc" ? (
-            <ArrowUp size={10} className="text-iot-cyan" />
-          ) : (
-            <ArrowDown size={10} className="text-iot-cyan" />
-          )
-        ) : (
-          <ArrowUp size={10} className="text-iot-text-disabled opacity-0 group-hover:opacity-50" />
-        )}
-      </span>
-    </th>
-  );
 
   if (!activeSub) {
     return (
@@ -207,12 +207,12 @@ export const MonitoredItemsTable: React.FC = () => {
           <thead className="sticky top-0 bg-iot-bg-surface z-10">
             <tr className="text-left text-2xs text-iot-text-muted uppercase tracking-wider border-b border-iot-border">
               <th className="px-3 py-2 w-6"></th>
-              <SortHeader field="name">Node</SortHeader>
-              <SortHeader field="value">Value</SortHeader>
-              <SortHeader field="type">Type</SortHeader>
-              <SortHeader field="status">Status</SortHeader>
+              <SortHeader field="name" sortField={sortField} sortDir={sortDir} onSort={handleSort}>Node</SortHeader>
+              <SortHeader field="value" sortField={sortField} sortDir={sortDir} onSort={handleSort}>Value</SortHeader>
+              <SortHeader field="type" sortField={sortField} sortDir={sortDir} onSort={handleSort}>Type</SortHeader>
+              <SortHeader field="status" sortField={sortField} sortDir={sortDir} onSort={handleSort}>Status</SortHeader>
               <th className="px-3 py-2 font-medium">Trend</th>
-              <SortHeader field="timestamp">Timestamp</SortHeader>
+              <SortHeader field="timestamp" sortField={sortField} sortDir={sortDir} onSort={handleSort}>Timestamp</SortHeader>
               <th className="px-3 py-2 font-medium w-8"></th>
             </tr>
           </thead>
@@ -265,7 +265,6 @@ export const MonitoredItemsTable: React.FC = () => {
                             : val.value
                           : "-"}
                       </span>
-                      {val?.unit && <span className="data-unit">{val.unit}</span>}
                     </td>
                     <td className="px-3 py-2">
                       <span className="text-xs text-iot-text-muted">
@@ -297,10 +296,10 @@ export const MonitoredItemsTable: React.FC = () => {
                             height={24}
                             color={
                               trend === "up"
-                                ? "#00d4aa"
+                                ? theme.cyan
                                 : trend === "down"
-                                ? "#f59e0b"
-                                : "#64748b"
+                                ? theme.amber
+                                : theme.text.muted
                             }
                           />
                         </div>
@@ -368,18 +367,7 @@ const ExpandedRowDetail: React.FC<{ value: MonitoredValue }> = ({ value }) => {
   const stats = useMemo(() => computeStats(value.history), [value.history]);
   const hasNumericData = value.numericValue !== undefined && value.history.length > 1;
   const chartContainerRef = React.useRef<HTMLDivElement>(null);
-  const [chartWidth, setChartWidth] = React.useState(600);
-
-  React.useEffect(() => {
-    if (!chartContainerRef.current) return;
-    const obs = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        setChartWidth(Math.floor(entry.contentRect.width));
-      }
-    });
-    obs.observe(chartContainerRef.current);
-    return () => obs.disconnect();
-  }, []);
+  const chartWidth = useContainerWidth(chartContainerRef, 600);
 
   return (
     <div className="flex gap-4">
@@ -390,7 +378,7 @@ const ExpandedRowDetail: React.FC<{ value: MonitoredValue }> = ({ value }) => {
             data={value.history}
             width={chartWidth}
             height={260}
-            color="#00d4aa"
+            color={theme.cyan}
             showGrid
             showAxis
             showControls

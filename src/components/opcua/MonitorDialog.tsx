@@ -3,6 +3,7 @@ import { useConnectionStore } from "@/stores/connectionStore";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
 import { Modal } from "@/components/ui/Modal";
 import { Button, Badge } from "@/components/ui";
+import { errorMessage } from "@/types/opcua";
 import { toast } from "@/stores/notificationStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import {
@@ -87,21 +88,26 @@ export const MonitorDialog: React.FC<MonitorDialogProps> = ({
       let subId: number;
 
       if (mode === "new") {
-        const interval = parseInt(publishingInterval) || 500;
+        const interval = parseInt(publishingInterval, 10) || 500;
         subId = await createSubscription(
           activeConnectionId,
           { publishing_interval: interval },
           newSubName || undefined
         );
       } else {
-        subId = selectedSubId!;
+        if (selectedSubId === null) {
+          toast.error("Monitor failed", "No subscription selected");
+          setIsSubmitting(false);
+          return;
+        }
+        subId = selectedSubId;
       }
 
       await addMonitoredItem(activeConnectionId, subId, {
         node_id: nodeId,
         display_name: displayName,
-        sampling_interval: parseInt(samplingInterval) || 500,
-        queue_size: parseInt(queueSize) || 10,
+        sampling_interval: parseInt(samplingInterval, 10) || 500,
+        queue_size: parseInt(queueSize, 10) || 10,
         discard_oldest: true,
       });
 
@@ -109,7 +115,7 @@ export const MonitorDialog: React.FC<MonitorDialogProps> = ({
       toast.success("Monitoring", displayName);
       onClose();
     } catch (e) {
-      toast.error("Monitor failed", String(e));
+      toast.error("Monitor failed", errorMessage(e));
     } finally {
       setIsSubmitting(false);
     }

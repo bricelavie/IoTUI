@@ -40,6 +40,26 @@ impl AppError {
     pub fn security(message: impl Into<String>) -> Self {
         Self::Security(message.into())
     }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::OpcUa(_) => "OpcUa",
+            Self::Connection(_) => "Connection",
+            Self::NotFound(_) => "NotFound",
+            Self::InvalidArgument(_) => "InvalidArgument",
+            Self::Security(_) => "Security",
+        }
+    }
+
+    fn message(&self) -> &str {
+        match self {
+            Self::OpcUa(m)
+            | Self::Connection(m)
+            | Self::NotFound(m)
+            | Self::InvalidArgument(m)
+            | Self::Security(m) => m,
+        }
+    }
 }
 
 impl serde::Serialize for AppError {
@@ -47,6 +67,10 @@ impl serde::Serialize for AppError {
     where
         S: serde::ser::Serializer,
     {
-        serializer.serialize_str(self.to_string().as_ref())
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("AppError", 2)?;
+        s.serialize_field("kind", self.kind())?;
+        s.serialize_field("message", self.message())?;
+        s.end()
     }
 }

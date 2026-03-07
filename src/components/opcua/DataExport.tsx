@@ -1,10 +1,16 @@
 import React, { useState, useMemo } from "react";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
-import { Panel, Button, Badge, Select, EmptyState } from "@/components/ui";
-import { Download, FileSpreadsheet, FileText, Copy, Check } from "lucide-react";
+import { Button, Badge, Select, EmptyState } from "@/components/ui";
+import { Download, FileSpreadsheet, Copy, Check } from "lucide-react";
 import { toast } from "@/stores/notificationStore";
 
 type ExportFormat = "csv" | "json" | "tsv";
+
+const EXPORT_FORMATS: ExportFormat[] = ["csv", "json", "tsv"];
+
+function isExportFormat(value: string): value is ExportFormat {
+  return (EXPORT_FORMATS as string[]).includes(value);
+}
 
 /** Escape a value for CSV: wrap in quotes if it contains comma, quote, or newline */
 function csvEscape(val: string | number | undefined | null): string {
@@ -117,10 +123,14 @@ export const DataExport: React.FC = () => {
 
   const handleCopy = async () => {
     if (!exportContent) return;
-    await navigator.clipboard.writeText(exportContent);
-    setCopied(true);
-    toast.success("Copied to clipboard");
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(exportContent);
+      setCopied(true);
+      toast.success("Copied to clipboard");
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.error("Copy failed", "Could not access clipboard");
+    }
   };
 
   const totalHistoryPoints = values.reduce((sum, [, val]) => sum + val.history.length, 0);
@@ -163,7 +173,7 @@ export const DataExport: React.FC = () => {
                 <Select
                   label="Format"
                   value={format}
-                  onChange={(e) => setFormat(e.target.value as ExportFormat)}
+                  onChange={(e) => { if (isExportFormat(e.target.value)) setFormat(e.target.value); }}
                   options={[
                     { value: "csv", label: "CSV (Comma Separated)" },
                     { value: "json", label: "JSON" },

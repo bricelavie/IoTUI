@@ -1,5 +1,6 @@
-import React, { useMemo, useState, useCallback, useRef } from "react";
+import React, { useMemo, useState, useCallback, useRef, useId, memo } from "react";
 import { Clock } from "lucide-react";
+import { theme } from "@/utils/theme";
 
 interface DataPoint {
   timestamp: number;
@@ -34,30 +35,30 @@ interface ChartPoint {
   timestamp: number;
 }
 
-export const RealtimeChart: React.FC<RealtimeChartProps> = ({
+export const RealtimeChart: React.FC<RealtimeChartProps> = memo(({
   data,
   width = 300,
   height = 120,
-  color = "#00d4aa",
+  color = theme.cyan,
   showGrid = true,
   showAxis = true,
   label,
   showControls = false,
 }) => {
   // ─── Trend control state ────────────────────────────────────────
+  const uid = useId();
+  const gradientId = `chart-grad-${uid.replace(/:/g, "")}`;
   const [timeRange, setTimeRange] = useState<TimeRange>("all");
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
-  const activeData = data;
-
   // Filter by time range
   const filteredData = useMemo(() => {
     const range = TIME_RANGES.find((r) => r.key === timeRange);
-    if (!range || !range.ms) return activeData;
+    if (!range || !range.ms) return data;
     const cutoff = Date.now() - range.ms;
-    return activeData.filter((d) => d.timestamp >= cutoff);
-  }, [activeData, timeRange]);
+    return data.filter((d) => d.timestamp >= cutoff);
+  }, [data, timeRange]);
 
   // ─── Geometry ───────────────────────────────────────────────────
   const pad = {
@@ -79,8 +80,12 @@ export const RealtimeChart: React.FC<RealtimeChartProps> = ({
       };
 
     const values = filteredData.map((d) => d.value);
-    const rawMin = Math.min(...values);
-    const rawMax = Math.max(...values);
+    let rawMin = values[0];
+    let rawMax = values[0];
+    for (const v of values) {
+      if (v < rawMin) rawMin = v;
+      if (v > rawMax) rawMax = v;
+    }
 
     let lo: number, hi: number;
     {
@@ -147,8 +152,6 @@ export const RealtimeChart: React.FC<RealtimeChartProps> = ({
     const ty = pt.y - th - 10 < pad.top ? pt.y + 12 : pt.y - th - 6;
     return { x: tx, y: ty, w: tw, h: th, pt };
   }, [hoverIndex, points, width]);
-
-  const gradientId = `chart-grad-${color.replace("#", "")}`;
 
   // ─── Empty state (no controls) ─────────────────────────────────
   if (filteredData.length < 2 && !showControls) {
@@ -233,7 +236,7 @@ export const RealtimeChart: React.FC<RealtimeChartProps> = ({
                 y1={tick.y}
                 x2={pad.left + innerW}
                 y2={tick.y}
-                stroke="#1e2a3a"
+                stroke={theme.border.DEFAULT}
                 strokeWidth={0.5}
               />
             ))}
@@ -280,7 +283,7 @@ export const RealtimeChart: React.FC<RealtimeChartProps> = ({
                 y1={pad.top}
                 x2={tooltip.pt.x}
                 y2={pad.top + innerH}
-                stroke="rgba(255,255,255,0.3)"
+                stroke={theme.text.disabled}
                 strokeWidth={1}
                 strokeDasharray="4,3"
               />
@@ -290,7 +293,7 @@ export const RealtimeChart: React.FC<RealtimeChartProps> = ({
                 y1={tooltip.pt.y}
                 x2={pad.left + innerW}
                 y2={tooltip.pt.y}
-                stroke="rgba(255,255,255,0.15)"
+                stroke={theme.border.light}
                 strokeWidth={1}
                 strokeDasharray="4,3"
               />
@@ -300,7 +303,7 @@ export const RealtimeChart: React.FC<RealtimeChartProps> = ({
                 cy={tooltip.pt.y}
                 r={5}
                 fill={color}
-                stroke="#ffffff"
+                stroke={theme.text.primary}
                 strokeWidth={2}
                 style={{ filter: `drop-shadow(0 0 6px ${color})` }}
               />
@@ -311,15 +314,15 @@ export const RealtimeChart: React.FC<RealtimeChartProps> = ({
                 width={tooltip.w}
                 height={tooltip.h}
                 rx={4}
-                fill="#0c1018"
-                stroke="#2a3650"
+                fill={theme.bg.base}
+                stroke={theme.border.light}
                 strokeWidth={1}
               />
               {/* Tooltip value */}
               <text
                 x={tooltip.x + 8}
                 y={tooltip.y + 14}
-                fill="#f0f4f8"
+                fill={theme.text.primary}
                 fontSize={11}
                 fontFamily="JetBrains Mono, monospace"
                 fontWeight="600"
@@ -330,7 +333,7 @@ export const RealtimeChart: React.FC<RealtimeChartProps> = ({
               <text
                 x={tooltip.x + 8}
                 y={tooltip.y + 28}
-                fill="#64748b"
+                fill={theme.text.muted}
                 fontSize={9}
                 fontFamily="JetBrains Mono, monospace"
               >
@@ -347,7 +350,7 @@ export const RealtimeChart: React.FC<RealtimeChartProps> = ({
                 x={pad.left - 6}
                 y={tick.y + 3}
                 textAnchor="end"
-                fill="#475569"
+                fill={theme.text.disabled}
                 fontSize={9}
                 fontFamily="JetBrains Mono, monospace"
               >
@@ -359,4 +362,5 @@ export const RealtimeChart: React.FC<RealtimeChartProps> = ({
       )}
     </div>
   );
-};
+});
+RealtimeChart.displayName = "RealtimeChart";

@@ -1,9 +1,9 @@
-import React, { useEffect, useRef, useState, useMemo } from "react";
+import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { useBrowserStore } from "@/stores/browserStore";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
 import { useAppStore } from "@/stores/appStore";
-import { Panel, Badge, Spinner, EmptyState, Button, Tabs, Input } from "@/components/ui";
+import { Panel, Badge, Spinner, EmptyState, Button, Tabs } from "@/components/ui";
 import { MonitorDialog } from "@/components/opcua/MonitorDialog";
 import { toast } from "@/stores/notificationStore";
 import * as opcua from "@/services/opcua";
@@ -21,6 +21,8 @@ import {
   History,
 } from "lucide-react";
 import type { HistoryReadResult } from "@/types/opcua";
+import { errorMessage } from "@/types/opcua";
+import { useAutoRefresh } from "@/hooks/useAutoRefresh";
 
 function valueHint(dataType?: string): string {
   switch (dataType) {
@@ -56,39 +58,25 @@ export const NodeAttributePanel: React.FC = () => {
   const [activeTab, setActiveTab] = useState("attributes");
   const [monitorDialogOpen, setMonitorDialogOpen] = useState(false);
 
-  // Auto-refresh state
-  const [autoRefresh, setAutoRefresh] = useState(false);
-  const [refreshInterval, setRefreshInterval] = useState(2000);
-  const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Auto-refresh via hook
+  const refreshAction = useCallback(async () => {
+    if (!activeConnectionId || !selectedNodeId) return;
+    await selectNode(activeConnectionId, selectedNodeId);
+  }, [activeConnectionId, selectedNodeId, selectNode]);
+
+  const { autoRefresh, setAutoRefresh, refreshInterval, setRefreshInterval } = useAutoRefresh({
+    action: refreshAction,
+    intervalMs: 2000,
+    canEnable: !!(activeConnectionId && selectedNodeId),
+  });
 
   // Inline write state
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
   const [isWriting, setIsWriting] = useState(false);
   const [writeError, setWriteError] = useState<string | null>(null);
-  const refreshInFlightRef = useRef(false);
   const [historyResult, setHistoryResult] = useState<HistoryReadResult | null>(null);
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
-
-  // Auto-refresh effect
-  useEffect(() => {
-    if (autoRefreshRef.current) {
-      clearInterval(autoRefreshRef.current);
-      autoRefreshRef.current = null;
-    }
-    if (autoRefresh && activeConnectionId && selectedNodeId) {
-      autoRefreshRef.current = setInterval(() => {
-        if (refreshInFlightRef.current) return;
-        refreshInFlightRef.current = true;
-        void selectNode(activeConnectionId, selectedNodeId).finally(() => {
-          refreshInFlightRef.current = false;
-        });
-      }, refreshInterval);
-    }
-    return () => {
-      if (autoRefreshRef.current) clearInterval(autoRefreshRef.current);
-    };
-  }, [autoRefresh, refreshInterval, activeConnectionId, selectedNodeId]);
 
   // Stop auto-refresh when node changes
   useEffect(() => {
@@ -137,7 +125,7 @@ export const NodeAttributePanel: React.FC = () => {
   }
 
   const details = selectedNodeDetails;
-  const isWritable = (details.access_level ?? 0) & 0x02; // CurrentWrite bit
+  const isWritable = Boolean((details.access_level ?? 0) & 0x02); // CurrentWrite bit
 
   const handleMonitor = () => {
     setMonitorDialogOpen(true);
@@ -154,11 +142,7 @@ export const NodeAttributePanel: React.FC = () => {
 
   const handleRefresh = () => {
     if (activeConnectionId && selectedNodeId) {
-      if (refreshInFlightRef.current) return;
-      refreshInFlightRef.current = true;
-      void selectNode(activeConnectionId, selectedNodeId).finally(() => {
-        refreshInFlightRef.current = false;
-      });
+      void selectNode(activeConnectionId, selectedNodeId);
     }
   };
 
@@ -182,8 +166,8 @@ export const NodeAttributePanel: React.FC = () => {
         toast.error("Write failed", result.status_code);
       }
     } catch (e) {
-      setWriteError(String(e));
-      toast.error("Write failed", String(e));
+      setWriteError(errorMessage(e));
+      toast.error("Write failed", errorMessage(e));
     } finally {
       setIsWriting(false);
     }
@@ -210,7 +194,7 @@ export const NodeAttributePanel: React.FC = () => {
       setHistoryResult(result);
       setActiveTab("history");
     } catch (e) {
-      toast.error("History read failed", String(e));
+      toast.error("History read failed", errorMessage(e));
     } finally {
       setIsHistoryLoading(false);
     }

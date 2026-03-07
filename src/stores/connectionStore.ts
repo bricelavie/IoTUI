@@ -2,9 +2,9 @@ import { create } from "zustand";
 import type {
   ConnectionConfig,
   ConnectionInfo,
-  ConnectionStatus,
   EndpointInfo,
 } from "@/types/opcua";
+import { errorMessage } from "@/types/opcua";
 import * as opcua from "@/services/opcua";
 import { log } from "@/services/logger";
 
@@ -64,7 +64,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       const endpoints = await opcua.discoverEndpoints(url);
       set({ endpoints, isDiscovering: false });
     } catch (e) {
-      set({ error: String(e), isDiscovering: false });
+      set({ error: errorMessage(e), isDiscovering: false });
       throw e;
     }
   },
@@ -84,8 +84,8 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       persistConnectionState(id);
       return id;
     } catch (e) {
-      log("error", "connection", "connect", `Connection failed: ${String(e)}`);
-      set({ error: String(e), isConnecting: false });
+      log("error", "connection", "connect", `Connection failed: ${errorMessage(e)}`);
+      set({ error: errorMessage(e), isConnecting: false });
       throw e;
     }
   },
@@ -103,8 +103,8 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       });
       persistConnectionState(activeConnectionId === id ? null : activeConnectionId);
     } catch (e) {
-      log("error", "connection", "disconnect", `Disconnect failed: ${String(e)}`);
-      set({ error: String(e) });
+      log("error", "connection", "disconnect", `Disconnect failed: ${errorMessage(e)}`);
+      set({ error: errorMessage(e) });
     }
   },
 
@@ -122,7 +122,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       persistConnectionState(nextActive);
       set({ connections, activeConnectionId: nextActive });
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: errorMessage(e) });
     }
   },
 
@@ -136,7 +136,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       );
       set({ connections: nextConnections });
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: errorMessage(e) });
     }
   },
 

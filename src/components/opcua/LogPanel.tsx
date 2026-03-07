@@ -16,8 +16,8 @@ import {
   Search,
   X,
 } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
-import type { LogLevel, LogCategory, LogEntry } from "@/types/opcua";
+import { setBackendLogLevel } from "@/services/logger";
+import type { LogLevel, LogCategory } from "@/types/opcua";
 import { useSettingsStore } from "@/stores/settingsStore";
 
 // ─── Helpers ─────────────────────────────────────────────────────
@@ -139,7 +139,7 @@ export const LogPanel: React.FC = () => {
 
   const handleSetBackendLevel = useCallback(async (level: string) => {
     try {
-      const result: string = await invoke("opcua_set_log_level", { level });
+      const result = await setBackendLogLevel(level);
       setBackendLevel(result);
     } catch {
       // ignore

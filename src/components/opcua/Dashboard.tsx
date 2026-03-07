@@ -1,36 +1,19 @@
-import React, { useMemo, useRef, useState, useEffect } from "react";
+import React, { useMemo, useRef } from "react";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
 import { useAppStore } from "@/stores/appStore";
 import { Card, Badge, Button, EmptyState } from "@/components/ui";
 import { RealtimeChart } from "@/components/charts/RealtimeChart";
 import { LayoutDashboard, FolderTree } from "lucide-react";
 import type { MonitoredValue } from "@/types/opcua";
-
-function computeStats(history: { timestamp: number; value: number }[]) {
-  if (history.length === 0) return { min: 0, max: 0, avg: 0 };
-  const values = history.map((h) => h.value);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const avg = values.reduce((a, b) => a + b, 0) / values.length;
-  return { min, max, avg };
-}
+import { computeStats } from "@/utils/stats";
+import { theme } from "@/utils/theme";
+import { useContainerWidth } from "@/hooks/useContainerWidth";
 
 const DashboardTile: React.FC<{ value: MonitoredValue }> = ({ value }) => {
   const stats = useMemo(() => computeStats(value.history), [value.history]);
   const hasNumericData = value.numericValue !== undefined && value.history.length > 1;
   const chartContainerRef = useRef<HTMLDivElement>(null);
-  const [chartWidth, setChartWidth] = useState(300);
-
-  useEffect(() => {
-    if (!chartContainerRef.current) return;
-    const obs = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        setChartWidth(Math.floor(entry.contentRect.width));
-      }
-    });
-    obs.observe(chartContainerRef.current);
-    return () => obs.disconnect();
-  }, []);
+  const chartWidth = useContainerWidth(chartContainerRef, 300);
 
   return (
     <Card className="flex flex-col overflow-hidden" glow={value.status_code === "Good" ? "cyan" : "none"}>
@@ -48,7 +31,6 @@ const DashboardTile: React.FC<{ value: MonitoredValue }> = ({ value }) => {
           <span className="text-xl font-mono font-bold text-iot-text-primary">
             {hasNumericData ? value.numericValue!.toFixed(2) : value.value}
           </span>
-          {value.unit && <span className="text-xs text-iot-text-muted">{value.unit}</span>}
           <span className="text-2xs text-iot-text-disabled ml-auto">{value.data_type}</span>
         </div>
       </div>
@@ -60,7 +42,7 @@ const DashboardTile: React.FC<{ value: MonitoredValue }> = ({ value }) => {
             data={value.history}
             width={chartWidth}
             height={150}
-            color="#00d4aa"
+            color={theme.cyan}
             showGrid
             showAxis
             showControls

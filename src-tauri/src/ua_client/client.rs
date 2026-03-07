@@ -1,6 +1,6 @@
 //! OPC UA client implementation using the async-opcua crate.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,11 +44,11 @@ struct SubscriptionBinding {
     logical_subscription_id: u32,
 }
 
-fn push_bounded<T>(buffer: &mut Vec<T>, value: T) {
+fn push_bounded<T>(buffer: &mut VecDeque<T>, value: T) {
     if buffer.len() >= MAX_BUFFERED_EVENTS {
-        buffer.remove(0);
+        buffer.pop_front();
     }
-    buffer.push(value);
+    buffer.push_back(value);
 }
 
 fn parse_connection_health(event: &SessionPollResult) -> Option<LiveConnectionHealth> {
@@ -68,15 +68,15 @@ fn parse_connection_health(event: &SessionPollResult) -> Option<LiveConnectionHe
 pub struct OpcUaConnection {
     session: Arc<Session>,
     event_loop_handle: tokio::task::JoinHandle<StatusCode>,
-    /// Subscription data change buffers: subscription_id -> Vec<DataChangeEvent>
+    /// Subscription data change buffers: subscription_id -> VecDeque<DataChangeEvent>
     /// Filled by callbacks, drained by poll_subscription
-    data_buffers: Arc<SyncMutex<HashMap<u32, Vec<DataChangeEvent>>>>,
+    data_buffers: Arc<SyncMutex<HashMap<u32, VecDeque<DataChangeEvent>>>>,
     /// Mapping of subscription_id -> Vec<(monitored_item_id, client_handle, node_id, display_name)>
     monitored_items: HashMap<u32, Vec<MonitoredItemState>>,
     /// Mapping of subscription_id -> publishing_interval (f64 ms)
     subscription_intervals: HashMap<u32, f64>,
-    /// Event buffer: filled by EventCallback, drained by poll_events
-    event_buffer: Arc<SyncMutex<Vec<EventData>>>,
+    /// Event buffer: bounded ring buffer filled by EventCallback, drained by poll_events
+    event_buffer: Arc<SyncMutex<VecDeque<EventData>>>,
     /// Indicates whether a connection is currently usable.
     connected: Arc<AtomicBool>,
     reconnecting: Arc<AtomicBool>,
@@ -93,23 +93,34 @@ pub enum LiveConnectionHealth {
 }
 
 impl OpcUaConnection {
+    /// Look up the server-assigned subscription ID for a given logical subscription ID.
+    fn resolve_server_subscription_id(
+        subscription_bindings: &SyncMutex<HashMap<u32, SubscriptionBinding>>,
+        logical_subscription_id: u32,
+    ) -> u32 {
+        subscription_bindings
+            .lock()
+            .iter()
+            .find_map(|(server_id, binding)| {
+                if binding.logical_subscription_id == logical_subscription_id {
+                    Some(*server_id)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(logical_subscription_id)
+    }
+
     fn build_data_change_callback(
-        data_buffers: Arc<SyncMutex<HashMap<u32, Vec<DataChangeEvent>>>>,
+        data_buffers: Arc<SyncMutex<HashMap<u32, VecDeque<DataChangeEvent>>>>,
         subscription_bindings: Arc<SyncMutex<HashMap<u32, SubscriptionBinding>>>,
         logical_subscription_id: u32,
     ) -> DataChangeCallback {
         DataChangeCallback::new(move |dv, item| {
-            let effective_subscription_id = subscription_bindings
-                .lock()
-                .iter()
-                .find_map(|(server_id, binding)| {
-                    if binding.logical_subscription_id == logical_subscription_id {
-                        Some(*server_id)
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(logical_subscription_id);
+            let effective_subscription_id = Self::resolve_server_subscription_id(
+                &subscription_bindings,
+                logical_subscription_id,
+            );
             let node_id_str = item.item_to_monitor().node_id.to_string();
             let display_name = node_id_str.clone();
             let value_str = dv
@@ -141,7 +152,7 @@ impl OpcUaConnection {
             };
 
             let mut bufs = data_buffers.lock();
-            let buffer = bufs.entry(logical_subscription_id).or_insert_with(Vec::new);
+            let buffer = bufs.entry(logical_subscription_id).or_insert_with(VecDeque::new);
             push_bounded(buffer, event);
         })
     }
@@ -153,33 +164,40 @@ impl OpcUaConnection {
             return;
         }
 
-        let mut bindings = self.subscription_bindings.lock();
-        let mut used_server_ids = HashMap::new();
+        // Build a map of server_id -> (publishing_interval, set of client_handles)
+        let mut server_info: HashMap<u32, (f64, Vec<u32>)> = HashMap::new();
         for server_id in existing_ids {
             if let Some(sub) = state.get(server_id) {
-                used_server_ids.insert(server_id, sub.publishing_interval().as_millis() as f64);
+                let handles: Vec<u32> = sub.monitored_items().map(|mi| mi.client_handle()).collect();
+                server_info.insert(server_id, (sub.publishing_interval().as_millis() as f64, handles));
             }
         }
 
         let mut next_bindings = HashMap::new();
-        for (logical_id, interval) in self.subscription_intervals.iter() {
-            let preferred = bindings
-                .iter()
-                .find_map(|(server_id, binding)| {
-                    if binding.logical_subscription_id == *logical_id {
-                        Some(*server_id)
-                    } else {
-                        None
-                    }
-                })
-                .filter(|server_id| used_server_ids.contains_key(server_id));
+        for (logical_id, _interval) in self.subscription_intervals.iter() {
+            // 1. Try existing preferred binding (still alive on server)
+            let preferred = Self::resolve_server_subscription_id(&self.subscription_bindings, *logical_id);
+            let preferred = if server_info.contains_key(&preferred) {
+                Some(preferred)
+            } else {
+                None
+            };
 
+            // 2. Fall back: match by monitored item client_handles (robust after reconnect)
             let chosen = preferred.or_else(|| {
-                used_server_ids
+                let our_handles: Vec<u32> = self
+                    .monitored_items
+                    .get(logical_id)
+                    .map(|items| items.iter().map(|i| i.client_handle).collect())
+                    .unwrap_or_default();
+                if our_handles.is_empty() {
+                    return None;
+                }
+                server_info
                     .iter()
-                    .find_map(|(server_id, publishing_interval)| {
-                        if (*publishing_interval - *interval).abs() < 1.0
-                            && !next_bindings.contains_key(server_id)
+                    .find_map(|(server_id, (_interval, server_handles))| {
+                        if !next_bindings.contains_key(server_id)
+                            && our_handles.iter().all(|h| server_handles.contains(h))
                         {
                             Some(*server_id)
                         } else {
@@ -198,7 +216,7 @@ impl OpcUaConnection {
             }
         }
 
-        *bindings = next_bindings;
+        *self.subscription_bindings.lock() = next_bindings;
     }
 
     fn parse_security_policy(policy: &str) -> AppResult<SecurityPolicy> {
@@ -298,13 +316,13 @@ impl OpcUaConnection {
                 issuer_endpoint_url: opcua::types::UAString::null(),
                 security_policy_uri: opcua::types::UAString::null(),
             },
-            AuthType::Certificate => UserTokenPolicy {
-                policy_id: opcua::types::UAString::from("certificate"),
-                token_type: opcua::types::UserTokenType::Certificate,
-                issued_token_type: opcua::types::UAString::null(),
-                issuer_endpoint_url: opcua::types::UAString::null(),
-                security_policy_uri: opcua::types::UAString::null(),
-            },
+            // Certificate auth returns early above; this branch is a defensive fallback
+            // in case someone refactors the early return.
+            AuthType::Certificate => {
+                return Err(AppError::security(
+                    "Certificate authentication is not yet supported.",
+                ));
+            }
         };
 
         let (session, event_loop) = client
@@ -345,9 +363,6 @@ impl OpcUaConnection {
                                 Ordering::Relaxed,
                             );
                         }
-                        if matches!(event, SessionPollResult::Reconnected(_)) {
-                            reconnecting_for_loop.store(false, Ordering::Relaxed);
-                        }
                     }
                     Err(code) => {
                         connected_for_loop.store(false, Ordering::Relaxed);
@@ -385,7 +400,7 @@ impl OpcUaConnection {
             data_buffers: data_buffers_runtime,
             monitored_items: HashMap::new(),
             subscription_intervals: HashMap::new(),
-            event_buffer: Arc::new(SyncMutex::new(Vec::new())),
+            event_buffer: Arc::new(SyncMutex::new(VecDeque::new())),
             connected: connected_flag,
             reconnecting: reconnecting_flag,
             subscription_bindings,
@@ -917,7 +932,7 @@ impl OpcUaConnection {
         self.data_buffers
             .lock()
             .entry(logical_subscription_id)
-            .or_insert_with(Vec::new);
+            .or_insert_with(VecDeque::new);
         self.monitored_items
             .entry(logical_subscription_id)
             .or_insert_with(Vec::new);
@@ -930,29 +945,34 @@ impl OpcUaConnection {
             },
         );
 
+        // Read actual server-revised parameters from the subscription state
+        let (revised_interval, revised_lifetime, revised_keepalive) = {
+            let state = self.session.subscription_state().lock();
+            if let Some(sub) = state.get(server_subscription_id) {
+                (
+                    sub.publishing_interval().as_millis() as f64,
+                    sub.lifetime_count(),
+                    sub.max_keep_alive_count(),
+                )
+            } else {
+                // Fallback to requested values if subscription state is unavailable
+                (request.publishing_interval, request.lifetime_count, request.max_keep_alive_count)
+            }
+        };
+
         Ok(CreateSubscriptionResult {
             subscription_id: logical_subscription_id,
-            revised_publishing_interval: request.publishing_interval,
-            revised_lifetime_count: request.lifetime_count,
-            revised_max_keep_alive_count: request.max_keep_alive_count,
+            revised_publishing_interval: revised_interval,
+            revised_lifetime_count: revised_lifetime,
+            revised_max_keep_alive_count: revised_keepalive,
         })
     }
 
     /// Delete a subscription
     pub async fn delete_subscription(&mut self, subscription_id: u32) -> AppResult<()> {
         self.sync_rebound_subscriptions();
-        let server_subscription_id = self
-            .subscription_bindings
-            .lock()
-            .iter()
-            .find_map(|(server_id, binding)| {
-                if binding.logical_subscription_id == subscription_id {
-                    Some(*server_id)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(subscription_id);
+        let server_subscription_id =
+            Self::resolve_server_subscription_id(&self.subscription_bindings, subscription_id);
         self.session
             .delete_subscription(server_subscription_id)
             .await
@@ -989,18 +1009,8 @@ impl OpcUaConnection {
         // create_monitored_items() replaces client_handle == 0 with auto-incremented
         // values internally. We must extract the actual client_handle from the response.
 
-        let server_subscription_id = self
-            .subscription_bindings
-            .lock()
-            .iter()
-            .find_map(|(server_id, binding)| {
-                if binding.logical_subscription_id == subscription_id {
-                    Some(*server_id)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(subscription_id);
+        let server_subscription_id =
+            Self::resolve_server_subscription_id(&self.subscription_bindings, subscription_id);
 
         let results = self
             .session
@@ -1060,18 +1070,8 @@ impl OpcUaConnection {
         item_ids: &[u32],
     ) -> AppResult<()> {
         self.sync_rebound_subscriptions();
-        let server_subscription_id = self
-            .subscription_bindings
-            .lock()
-            .iter()
-            .find_map(|(server_id, binding)| {
-                if binding.logical_subscription_id == subscription_id {
-                    Some(*server_id)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(subscription_id);
+        let server_subscription_id =
+            Self::resolve_server_subscription_id(&self.subscription_bindings, subscription_id);
         let client_handles = self
             .monitored_items
             .get(&subscription_id)
@@ -1111,7 +1111,7 @@ impl OpcUaConnection {
     /// The async-opcua crate uses callbacks, so we drain the buffer that callbacks fill
     pub fn poll_subscription(&self, subscription_id: u32) -> AppResult<Vec<DataChangeEvent>> {
         let mut bufs = self.data_buffers.lock();
-        let mut events = bufs.remove(&subscription_id).unwrap_or_default();
+        let mut events: Vec<DataChangeEvent> = bufs.remove(&subscription_id).unwrap_or_default().into();
 
         if let Some(sub_items) = self.monitored_items.get(&subscription_id) {
             for event in &mut events {
@@ -1126,7 +1126,7 @@ impl OpcUaConnection {
             }
         }
 
-        bufs.entry(subscription_id).or_insert_with(Vec::new);
+        bufs.entry(subscription_id).or_insert_with(VecDeque::new);
         Ok(events)
     }
 
@@ -1447,7 +1447,8 @@ impl OpcUaConnection {
                     };
 
                     debug!("EventCallback: received event from source={}", event.source_name);
-                    event_buf.lock().push(event);
+                    let mut buf = event_buf.lock();
+                    push_bounded(&mut buf, event);
                 }),
             )
             .await

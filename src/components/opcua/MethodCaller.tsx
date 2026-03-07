@@ -21,6 +21,7 @@ import type {
   CallMethodResult,
   TypedArgValue,
 } from "@/types/opcua";
+import { errorMessage } from "@/types/opcua";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -156,7 +157,6 @@ export const MethodCaller: React.FC = () => {
   // Method info from discovery
   const [methodInfo, setMethodInfo] = useState<MethodInfo | null>(null);
   const [isDiscovering, setIsDiscovering] = useState(false);
-  const [discoveredForId, setDiscoveredForId] = useState("");
 
   // Argument values
   const [argValues, setArgValues] = useState<string[]>([]);
@@ -188,7 +188,6 @@ export const MethodCaller: React.FC = () => {
       try {
         const info = await opcua.getMethodInfo(activeConnectionId, id);
         setMethodInfo(info);
-        setDiscoveredForId(id);
         setArgValues(new Array(info.input_arguments.length).fill(""));
         setArgErrors(new Array(info.input_arguments.length).fill(""));
 
@@ -198,7 +197,7 @@ export const MethodCaller: React.FC = () => {
           if (inferred) setObjectNodeId(inferred);
         }
       } catch (e) {
-        toast.error(`Failed to discover method: ${e}`);
+        toast.error(`Failed to discover method: ${errorMessage(e)}`);
       }
 
       setIsDiscovering(false);
@@ -280,7 +279,7 @@ export const MethodCaller: React.FC = () => {
         toast.warning(`Method returned: ${res.status_code}`);
       }
     } catch (e) {
-      const msg = String(e);
+      const msg = errorMessage(e);
       setError(msg);
       toast.error(`Method call failed: ${msg}`);
     }

@@ -7,6 +7,7 @@ import type {
   LogEntry,
   BackendLogEntry,
 } from "@/types/opcua";
+import { errorMessage } from "@/types/opcua";
 
 // ─── Sensitive data masking ──────────────────────────────────────
 
@@ -31,8 +32,6 @@ function maskSensitiveData(value: unknown): unknown {
 }
 
 // ─── Core log function ───────────────────────────────────────────
-
-let _nextId = 1;
 
 export function log(
   level: LogLevel,
@@ -107,7 +106,7 @@ export function withLogging<TArgs extends unknown[], TResult>(
     } catch (err) {
       // Always log errors, even for poll commands
       const duration = Math.round(performance.now() - start);
-      const errMsg = err instanceof Error ? err.message : String(err);
+      const errMsg = errorMessage(err);
       log(
         "error",
         "ipc",
@@ -125,6 +124,7 @@ export function withLogging<TArgs extends unknown[], TResult>(
 
 let backendPollInterval: ReturnType<typeof setInterval> | null = null;
 let backendPollInFlight = false;
+let backendLogCursor = 0;
 
 function mapBackendLevel(level: string): LogLevel {
   switch (level.toLowerCase()) {
@@ -148,7 +148,13 @@ async function pollBackendLogs() {
   if (backendPollInFlight) return;
   backendPollInFlight = true;
   try {
-    const logs: BackendLogEntry[] = await invoke("opcua_get_backend_logs");
+    const response = await invoke<{ entries: BackendLogEntry[]; cursor: number }>(
+      "get_backend_logs",
+      { cursor: backendLogCursor }
+    );
+    const { entries: logs, cursor: newCursor } = response;
+    backendLogCursor = newCursor;
+
     if (logs.length === 0) return;
 
     const entries: Omit<LogEntry, "id">[] = logs.map((entry) => ({
@@ -160,8 +166,17 @@ async function pollBackendLogs() {
     }));
 
     useLogStore.getState().addEntries(entries);
-  } catch {
-    // Silently ignore polling errors
+  } catch (err) {
+    // Log the failure at warn level so it is visible in the log panel.
+    // Use a direct addEntry call to avoid recursing into pollBackendLogs.
+    const errMsg = errorMessage(err);
+    useLogStore.getState().addEntry({
+      timestamp: new Date().toISOString(),
+      level: "warn",
+      category: "backend",
+      source: "get_backend_logs",
+      message: `Backend log poll failed: ${errMsg}`,
+    });
   } finally {
     backendPollInFlight = false;
   }
@@ -179,4 +194,10 @@ export function stopBackendLogPolling() {
     clearInterval(backendPollInterval);
     backendPollInterval = null;
   }
+}
+
+// ─── Backend log level control ───────────────────────────────────
+
+export async function setBackendLogLevel(level: string): Promise<string> {
+  return invoke<string>("set_log_level", { level });
 }

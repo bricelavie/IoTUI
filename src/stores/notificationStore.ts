@@ -20,21 +20,40 @@ interface NotificationStore {
 }
 
 let nextId = 0;
+const MAX_NOTIFICATIONS = 100;
+const DEDUP_WINDOW_MS = 2_000;
 
 export const useNotificationStore = create<NotificationStore>((set) => ({
   notifications: [],
 
   addNotification: (n) => {
     const id = `notif-${++nextId}`;
+    const now = Date.now();
     const notification: Notification = {
       ...n,
       id,
-      timestamp: Date.now(),
+      timestamp: now,
       duration: n.duration ?? (n.type === "error" ? getSetting("errorToastDuration") : getSetting("normalToastDuration")),
     };
-    set((state) => ({
-      notifications: [...state.notifications, notification],
-    }));
+    set((state) => {
+      // Deduplicate: skip if an identical title+message+type exists within the window
+      const isDuplicate = state.notifications.some(
+        (existing) =>
+          existing.type === n.type &&
+          existing.title === n.title &&
+          existing.message === n.message &&
+          now - existing.timestamp < DEDUP_WINDOW_MS
+      );
+      if (isDuplicate) return state;
+
+      const updated = [...state.notifications, notification];
+      // Cap at MAX_NOTIFICATIONS, dropping oldest first
+      return {
+        notifications: updated.length > MAX_NOTIFICATIONS
+          ? updated.slice(updated.length - MAX_NOTIFICATIONS)
+          : updated,
+      };
+    });
     return id;
   },
 

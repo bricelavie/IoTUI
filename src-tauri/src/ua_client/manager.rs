@@ -47,10 +47,6 @@ impl UaClientManager {
         }
     }
 
-    fn should_use_simulator(config: &ConnectionConfig) -> bool {
-        config.use_simulator
-    }
-
     async fn get_connection(&self, connection_id: &str) -> AppResult<SharedConnectionState> {
         self.connections
             .read()
@@ -73,10 +69,9 @@ impl UaClientManager {
     }
 
     pub async fn connect(&self, config: ConnectionConfig) -> AppResult<String> {
-        let use_sim = Self::should_use_simulator(&config);
         let id = uuid::Uuid::new_v4().to_string();
 
-        let backend = if use_sim {
+        let backend = if config.use_simulator {
             log::info!("Connecting via simulator for: {}", config.endpoint_url);
             ConnectionBackend::Simulator
         } else {
@@ -117,6 +112,27 @@ impl UaClientManager {
         }
 
         Ok(())
+    }
+
+    /// Disconnect all active connections. Called during graceful shutdown.
+    pub async fn disconnect_all(&self) {
+        let all_states: Vec<SharedConnectionState> = {
+            let mut map = self.connections.write().await;
+            map.drain().map(|(_, state)| state).collect()
+        };
+
+        for state in all_states {
+            let backend = {
+                let mut guard = state.write().await;
+                guard.status = ConnectionStatus::Disconnected;
+                std::mem::replace(&mut guard.backend, ConnectionBackend::Simulator)
+            };
+
+            if let ConnectionBackend::Live(client) = backend {
+                let client = client.lock().await;
+                let _ = client.disconnect().await;
+            }
+        }
     }
 
     pub async fn discover_endpoints(&self, url: &str) -> AppResult<Vec<EndpointInfo>> {

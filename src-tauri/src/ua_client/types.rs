@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 // ─── Connection Types ────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ConnectionConfig {
     pub name: String,
     pub endpoint_url: String,
@@ -10,11 +11,28 @@ pub struct ConnectionConfig {
     pub security_mode: String,
     pub auth_type: AuthType,
     pub username: Option<String>,
+    #[serde(skip_serializing)]
     pub password: Option<String>,
     pub session_timeout: Option<u32>,
     /// When true, use the built-in simulator instead of connecting to an external OPC UA server.
     #[serde(default)]
     pub use_simulator: bool,
+}
+
+impl fmt::Debug for ConnectionConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConnectionConfig")
+            .field("name", &self.name)
+            .field("endpoint_url", &self.endpoint_url)
+            .field("security_policy", &self.security_policy)
+            .field("security_mode", &self.security_mode)
+            .field("auth_type", &self.auth_type)
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .field("session_timeout", &self.session_timeout)
+            .field("use_simulator", &self.use_simulator)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,4 +287,13 @@ pub struct EventData {
     pub timestamp: String,
     pub receive_time: String,
     pub source_node_id: Option<String>,
+}
+
+// ─── Logging Types ───────────────────────────────────────────────
+
+/// Response type for cursor-based backend log polling.
+#[derive(Debug, Clone, Serialize)]
+pub struct BackendLogResponse {
+    pub entries: Vec<crate::logging::BackendLogEntry>,
+    pub cursor: usize,
 }

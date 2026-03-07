@@ -3,7 +3,8 @@ import { useConnectionStore } from "@/stores/connectionStore";
 import { useBrowserStore } from "@/stores/browserStore";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
 import { useAppStore } from "@/stores/appStore";
-import { Button, Input, Select, Card, Badge, StatusDot, EmptyState, Spinner } from "@/components/ui";
+import { errorMessage } from "@/types/opcua";
+import { Button, Input, Select, Card, Badge, StatusDot, EmptyState } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ui/Modal";
 import { toast } from "@/stores/notificationStore";
 import {
@@ -11,7 +12,6 @@ import {
   Search,
   Server,
   Shield,
-  ChevronRight,
   Trash2,
   Plus,
   Save,
@@ -41,7 +41,7 @@ const SECURITY_MODES = [
 const AUTH_TYPES = [
   { value: "anonymous", label: "Anonymous" },
   { value: "username_password", label: "Username / Password" },
-  { value: "certificate", label: "Certificate" },
+  { value: "certificate", label: "Certificate (not yet supported)", disabled: true },
 ];
 
 // ─── Saved profiles (localStorage) ──────────────────────────────
@@ -192,7 +192,7 @@ export const ConnectionPanel: React.FC = () => {
       addRecentEndpoint(endpointUrl);
       setRecentEndpoints(loadRecentEndpoints());
     } catch (e) {
-      toast.error("Discovery failed", String(e));
+      toast.error("Discovery failed", errorMessage(e));
     }
   };
 
@@ -222,8 +222,8 @@ export const ConnectionPanel: React.FC = () => {
       toast.success("Connected", `${name} (${endpointUrl})`);
       await loadRootNodes(id);
       setActiveView("browse");
-    } catch {
-      toast.error("Connection failed", error || "Unknown error");
+    } catch (e) {
+      toast.error("Connection failed", errorMessage(e) || "Unknown error");
     }
   };
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 import { clsx } from "clsx";
 
 export interface ContextMenuItem {
@@ -27,8 +27,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   const menuRef = useRef<HTMLDivElement>(null);
   const [adjusted, setAdjusted] = useState<{ x: number; y: number } | null>(null);
 
-  // Adjust position to keep menu within viewport
-  useEffect(() => {
+  // Adjust position to keep menu within viewport (useLayoutEffect prevents visual flash)
+  useLayoutEffect(() => {
     if (!position || !menuRef.current) {
       setAdjusted(null);
       return;
@@ -126,11 +126,11 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
 
 // ─── Hook for managing context menu state ──────────────────────────
 
-export function useContextMenu() {
+export function useContextMenu<T = unknown>() {
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
-  const [menuData, setMenuData] = useState<unknown>(null);
+  const [menuData, setMenuData] = useState<T | null>(null);
 
-  const showMenu = useCallback((e: React.MouseEvent, data?: unknown) => {
+  const showMenu = useCallback((e: React.MouseEvent, data?: T) => {
     e.preventDefault();
     e.stopPropagation();
     setMenuPosition({ x: e.clientX, y: e.clientY });
