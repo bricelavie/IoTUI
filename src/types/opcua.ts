@@ -231,7 +231,12 @@ export type ViewMode =
   | "dashboard"
   | "export"
   | "logs"
-  | "settings";
+  | "settings"
+  // MQTT views
+  | "mqtt_connection"
+  | "mqtt_explorer"
+  | "mqtt_dashboard"
+  | "mqtt_broker_admin";
 
 export interface TreeNodeState {
   node: BrowseNode;
@@ -293,6 +298,7 @@ export interface BackendLogEntry {
 
 export type AppErrorKind =
   | "OpcUa"
+  | "Mqtt"
   | "Connection"
   | "NotFound"
   | "InvalidArgument"

@@ -28,6 +28,13 @@ futures-util = "0.3"
 # OPC UA client support
 async-opcua = { version = "0.18", features = ["client"] }
 
+# MQTT client support
+rumqttc = { version = "0.24", features = ["use-rustls"] }
+# Embedded MQTT broker
+rumqttd = "0.19"
+# TLS support for MQTT
+rustls-pemfile = "2"
+
 [features]
 default = []
 custom-protocol = ["tauri/custom-protocol"]

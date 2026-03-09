@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from "react";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
-import { Button, Badge, Select, EmptyState } from "@/components/ui";
+import { Button, Badge, Select, EmptyState, Checkbox } from "@/components/ui";
 import { Download, FileSpreadsheet, Copy, Check } from "lucide-react";
 import { toast } from "@/stores/notificationStore";
 
@@ -182,15 +182,13 @@ export const DataExport: React.FC = () => {
                 />
                 <div className="flex flex-col gap-1">
                   <label className="text-xs text-iot-text-muted font-medium">Options</label>
-                  <label className="flex items-center gap-2 mt-1 cursor-pointer">
-                    <input
-                      type="checkbox"
+                  <div className="mt-1">
+                    <Checkbox
                       checked={includeHistory}
-                      onChange={(e) => setIncludeHistory(e.target.checked)}
-                      className="rounded border-iot-border bg-iot-bg-base"
+                      onChange={setIncludeHistory}
+                      label="Include history data"
                     />
-                    <span className="text-xs text-iot-text-secondary">Include history data</span>
-                  </label>
+                  </div>
                 </div>
               </div>
 

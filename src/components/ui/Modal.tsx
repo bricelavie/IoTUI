@@ -24,6 +24,7 @@ export const Modal: React.FC<ModalProps> = ({
 }) => {
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
@@ -51,6 +52,10 @@ export const Modal: React.FC<ModalProps> = ({
 
   useEffect(() => {
     if (!open) return;
+
+    // Save the element that had focus before the modal opened
+    previousFocusRef.current = document.activeElement as HTMLElement | null;
+
     document.addEventListener("keydown", handleKeyDown);
 
     // Auto-focus the panel so keyboard users start inside the modal
@@ -58,6 +63,12 @@ export const Modal: React.FC<ModalProps> = ({
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
       clearTimeout(timer);
+
+      // Restore focus to the previously focused element
+      if (previousFocusRef.current && typeof previousFocusRef.current.focus === "function") {
+        previousFocusRef.current.focus();
+        previousFocusRef.current = null;
+      }
     };
   }, [open, handleKeyDown]);
 
@@ -94,7 +105,7 @@ export const Modal: React.FC<ModalProps> = ({
           <button
             onClick={onClose}
             aria-label="Close dialog"
-            className="text-iot-text-disabled hover:text-iot-text-muted transition-colors"
+            className="text-iot-text-disabled hover:text-iot-text-muted transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iot-border-focus focus-visible:ring-offset-1 focus-visible:ring-offset-iot-bg-surface"
           >
             <X size={16} />
           </button>

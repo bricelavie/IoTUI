@@ -1,9 +1,10 @@
 import React from "react";
 import { clsx } from "clsx";
 
-export const Spinner: React.FC<{ size?: number; className?: string }> = ({
+export const Spinner: React.FC<{ size?: number; className?: string; label?: string }> = ({
   size = 16,
   className,
+  label = "Loading",
 }) => (
   <svg
     className={clsx("animate-spin text-iot-cyan", className)}
@@ -11,6 +12,8 @@ export const Spinner: React.FC<{ size?: number; className?: string }> = ({
     height={size}
     viewBox="0 0 24 24"
     fill="none"
+    role="status"
+    aria-label={label}
   >
     <circle
       className="opacity-25"

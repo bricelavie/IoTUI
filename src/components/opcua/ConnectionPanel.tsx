@@ -615,7 +615,7 @@ export const ConnectionPanel: React.FC = () => {
                           </div>
                         </div>
                         <div className="flex items-center gap-1.5 flex-shrink-0">
-                          <Badge variant={conn.status === "connected" ? "success" : "warning"}>
+                          <Badge variant={conn.status === "connected" ? "success" : conn.status === "error" ? "danger" : "warning"}>
                             {conn.status}
                           </Badge>
                           <Badge variant={conn.is_simulator ? "info" : "success"}>

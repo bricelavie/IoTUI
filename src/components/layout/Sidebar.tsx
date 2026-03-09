@@ -2,6 +2,8 @@ import React from "react";
 import { clsx } from "clsx";
 import { useAppStore } from "@/stores/appStore";
 import { useConnectionStore } from "@/stores/connectionStore";
+import { useMqttConnectionStore } from "@/stores/mqttConnectionStore";
+import { Tooltip } from "@/components/ui";
 import type { ViewMode } from "@/types/opcua";
 import {
   Zap,
@@ -18,6 +20,8 @@ import {
   AlertTriangle,
   ScrollText,
   Settings,
+  Server,
+  Compass,
 } from "lucide-react";
 
 interface NavItem {
@@ -27,7 +31,7 @@ interface NavItem {
   requiresConnection?: boolean;
 }
 
-const navItems: NavItem[] = [
+const opcuaNavItems: NavItem[] = [
   { id: "connection", label: "Connect", icon: <Zap size={18} /> },
   { id: "browse", label: "Browse", icon: <FolderTree size={18} />, requiresConnection: true },
   { id: "subscriptions", label: "Monitor", icon: <Activity size={18} />, requiresConnection: true },
@@ -39,15 +43,44 @@ const navItems: NavItem[] = [
   { id: "settings", label: "Settings", icon: <Settings size={18} /> },
 ];
 
+const mqttNavItems: NavItem[] = [
+  { id: "mqtt_connection", label: "Connect", icon: <Zap size={18} /> },
+  { id: "mqtt_explorer", label: "Explorer", icon: <Compass size={18} />, requiresConnection: true },
+  { id: "mqtt_dashboard", label: "Dashboard", icon: <LayoutDashboard size={18} />, requiresConnection: true },
+  { id: "mqtt_broker_admin", label: "Broker", icon: <Server size={18} />, requiresConnection: true },
+  { id: "logs", label: "Logs", icon: <ScrollText size={18} /> },
+  { id: "settings", label: "Settings", icon: <Settings size={18} /> },
+];
+
 const protocolItems = [
   { id: "opcua" as const, label: "OPC UA", icon: <Network size={16} />, active: true },
-  { id: "mqtt" as const, label: "MQTT", icon: <Radio size={16} />, active: false },
+  { id: "mqtt" as const, label: "MQTT", icon: <Radio size={16} />, active: true },
   { id: "modbus" as const, label: "Modbus", icon: <Cpu size={16} />, active: false },
 ];
 
 export const Sidebar: React.FC = () => {
-  const { activeView, setActiveView, sidebarCollapsed, toggleSidebar, activeProtocol } = useAppStore();
-  const { activeConnectionId } = useConnectionStore();
+  const { activeView, setActiveView, sidebarCollapsed, toggleSidebar, activeProtocol, setActiveProtocol } = useAppStore();
+  const { activeConnectionId: opcuaConnectionId } = useConnectionStore();
+  const { activeConnectionId: mqttConnectionId, connections: mqttConnections } = useMqttConnectionStore();
+
+  const activeConnection = mqttConnections.find((c) => c.id === mqttConnectionId);
+  const isBrokerOrSim = activeConnection?.mode === "broker" || activeConnection?.is_simulator;
+
+  // Filter broker admin unless connected in broker/simulator mode
+  const navItems = activeProtocol === "mqtt"
+    ? mqttNavItems.filter((item) => item.id !== "mqtt_broker_admin" || isBrokerOrSim)
+    : opcuaNavItems;
+  const hasConnection = activeProtocol === "mqtt" ? !!mqttConnectionId : !!opcuaConnectionId;
+
+  const handleProtocolSwitch = (protocolId: "opcua" | "mqtt" | "modbus") => {
+    setActiveProtocol(protocolId);
+    // Navigate to the connection view of the new protocol
+    if (protocolId === "mqtt") {
+      setActiveView("mqtt_connection");
+    } else if (protocolId === "opcua") {
+      setActiveView("connection");
+    }
+  };
 
   return (
     <div
@@ -62,6 +95,7 @@ export const Sidebar: React.FC = () => {
           <button
             key={p.id}
             disabled={!p.active}
+            onClick={() => p.active && handleProtocolSwitch(p.id)}
             className={clsx(
               "flex items-center gap-2 w-full rounded px-2 py-1.5 text-xs font-medium transition-colors duration-100",
               p.id === activeProtocol
@@ -73,9 +107,9 @@ export const Sidebar: React.FC = () => {
             title={!p.active ? "Coming soon" : undefined}
           >
             {p.icon}
-            {!sidebarCollapsed && <span>{p.label}</span>}
+            {!sidebarCollapsed && <span className="transition-opacity duration-200">{p.label}</span>}
             {!sidebarCollapsed && !p.active && (
-              <span className="ml-auto text-2xs bg-iot-bg-elevated border border-iot-border rounded px-1">Soon</span>
+              <span className="ml-auto text-2xs bg-iot-bg-elevated border border-iot-border rounded px-1 transition-opacity duration-200">Soon</span>
             )}
           </button>
         ))}
@@ -84,7 +118,7 @@ export const Sidebar: React.FC = () => {
       {/* Navigation */}
       <nav className="flex-1 py-2 px-2 space-y-0.5 overflow-y-auto">
         {navItems.map((item) => {
-          const disabled = item.requiresConnection && !activeConnectionId;
+          const disabled = item.requiresConnection && !hasConnection;
           return (
             <button
               key={item.id}
@@ -101,19 +135,21 @@ export const Sidebar: React.FC = () => {
               title={sidebarCollapsed ? item.label : undefined}
             >
               <span className="flex-shrink-0">{item.icon}</span>
-              {!sidebarCollapsed && <span>{item.label}</span>}
+              {!sidebarCollapsed && <span className="transition-opacity duration-200">{item.label}</span>}
             </button>
           );
         })}
       </nav>
 
       {/* Collapse toggle - matches StatusBar h-6 */}
-      <button
-        onClick={toggleSidebar}
-        className="flex items-center justify-center h-6 flex-shrink-0 text-iot-text-disabled hover:text-iot-text-muted transition-colors"
-      >
-        {sidebarCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
-      </button>
+      <Tooltip content={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}>
+        <button
+          onClick={toggleSidebar}
+          className="flex items-center justify-center h-6 flex-shrink-0 text-iot-text-disabled hover:text-iot-text-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iot-border-focus focus-visible:ring-offset-1 focus-visible:ring-offset-iot-bg-base"
+        >
+          {sidebarCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+        </button>
+      </Tooltip>
     </div>
   );
 };

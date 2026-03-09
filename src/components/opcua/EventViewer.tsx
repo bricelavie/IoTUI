@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { Badge, EmptyState, Button } from "@/components/ui";
+import { ConfirmDialog } from "@/components/ui/Modal";
 import { AlertTriangle, Pause, Play, Trash2, Filter } from "lucide-react";
 import * as opcua from "@/services/opcua";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -47,6 +48,7 @@ export const EventViewer: React.FC = () => {
   const [filter, setFilter] = useState<SeverityFilter>("all");
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [showFilterPanel, setShowFilterPanel] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const inFlightRef = useRef(false);
 
@@ -149,7 +151,7 @@ export const EventViewer: React.FC = () => {
             {isPolling ? <Pause size={12} /> : <Play size={12} />}
             {isPolling ? "Pause" : "Resume"}
           </Button>
-          <Button variant="ghost" size="xs" onClick={clearEvents}>
+          <Button variant="ghost" size="xs" onClick={() => setConfirmClear(true)}>
             <Trash2 size={12} />
             Clear
           </Button>
@@ -194,7 +196,8 @@ export const EventViewer: React.FC = () => {
             <select
               value={sourceFilter}
               onChange={(e) => setSourceFilter(e.target.value)}
-              className="bg-iot-bg-base border border-iot-border rounded px-2 py-0.5 text-2xs text-iot-text-secondary focus:outline-none focus:border-iot-border-focus"
+              className="bg-iot-bg-base border border-iot-border rounded px-2 py-0.5 pr-6 text-2xs text-iot-text-secondary appearance-none focus:outline-none focus:border-iot-border-focus focus:ring-1 focus:ring-iot-border-focus/30 transition-colors duration-150"
+              style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`, backgroundRepeat: "no-repeat", backgroundPosition: "right 4px center" }}
             >
               <option value="all">All Sources</option>
               {uniqueSources.map((s) => (
@@ -302,6 +305,20 @@ export const EventViewer: React.FC = () => {
           Buffer: {events.length}/{maxEventEntries}
         </span>
       </div>
+
+      {/* Confirm clear dialog */}
+      <ConfirmDialog
+        open={confirmClear}
+        onClose={() => setConfirmClear(false)}
+        onConfirm={() => {
+          clearEvents();
+          setConfirmClear(false);
+        }}
+        title="Clear Events"
+        message={`Clear all ${events.length} events? This cannot be undone.`}
+        confirmLabel="Clear"
+        danger
+      />
     </div>
   );
 };

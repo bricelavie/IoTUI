@@ -1,6 +1,7 @@
 mod commands;
 mod error;
 mod logging;
+mod mqtt;
 mod state;
 mod ua_client;
 
@@ -35,16 +36,30 @@ pub fn run() {
             commands::opcua::opcua_poll_events,
             commands::opcua::get_backend_logs,
             commands::opcua::set_log_level,
+            // MQTT commands
+            commands::mqtt::mqtt_connect,
+            commands::mqtt::mqtt_disconnect,
+            commands::mqtt::mqtt_get_connections,
+            commands::mqtt::mqtt_get_connection_status,
+            commands::mqtt::mqtt_subscribe,
+            commands::mqtt::mqtt_unsubscribe,
+            commands::mqtt::mqtt_get_subscriptions,
+            commands::mqtt::mqtt_publish,
+            commands::mqtt::mqtt_poll_messages,
+            commands::mqtt::mqtt_get_topics,
+            commands::mqtt::mqtt_get_broker_stats,
+            commands::mqtt::mqtt_get_broker_clients,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                // Gracefully disconnect all active OPC UA sessions on shutdown
+                // Gracefully disconnect all active sessions on shutdown
                 // to avoid orphaned server-side sessions lingering until timeout.
                 let state = app.state::<AppState>();
                 let rt = tokio::runtime::Handle::current();
                 rt.block_on(state.ua_manager.disconnect_all());
+                rt.block_on(state.mqtt_manager.disconnect_all());
             }
         });
 }

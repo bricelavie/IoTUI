@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
-import { Button, Badge, EmptyState } from "@/components/ui";
+import { Button, Badge, EmptyState, Tooltip } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ui/Modal";
 import { errorMessage } from "@/types/opcua";
 import { toast } from "@/stores/notificationStore";
@@ -143,7 +143,7 @@ export const SubscriptionManager: React.FC = () => {
                 value={newSubName}
                 onChange={(e) => setNewSubName(e.target.value)}
                 placeholder={`Subscription ${useSubscriptionStore.getState().nextSubNumber}`}
-                className="w-full bg-iot-bg-elevated border border-iot-border rounded px-2.5 py-1.5 text-xs text-iot-text-primary placeholder:text-iot-text-disabled focus:outline-none focus:border-iot-border-focus transition-colors"
+                className="w-full bg-iot-bg-elevated border border-iot-border rounded px-2.5 py-1.5 text-xs text-iot-text-primary placeholder:text-iot-text-disabled focus:outline-none focus:border-iot-border-focus focus:ring-1 focus:ring-iot-border-focus/30 transition-colors duration-150"
                 autoFocus
                 onKeyDown={(e) => {
                   if (e.key === "Enter") handleCreateSubscription();
@@ -161,7 +161,7 @@ export const SubscriptionManager: React.FC = () => {
                   type="number"
                   value={publishingInterval}
                   onChange={(e) => setPublishingInterval(e.target.value)}
-                  className="w-24 bg-iot-bg-elevated border border-iot-border rounded px-2.5 py-1.5 text-xs font-mono text-iot-text-primary focus:outline-none focus:border-iot-border-focus transition-colors"
+                  className="w-24 bg-iot-bg-elevated border border-iot-border rounded px-2.5 py-1.5 text-xs font-mono text-iot-text-primary focus:outline-none focus:border-iot-border-focus focus:ring-1 focus:ring-iot-border-focus/30 transition-colors duration-150"
                   min="100"
                   step="100"
                   onKeyDown={(e) => {
@@ -263,7 +263,7 @@ export const SubscriptionManager: React.FC = () => {
                               onChange={(e) =>
                                 setEditNameValue(e.target.value)
                               }
-                              className="flex-1 bg-iot-bg-base border border-iot-border-focus rounded px-2 py-0.5 text-xs text-iot-text-primary focus:outline-none min-w-0"
+                              className="flex-1 bg-iot-bg-base border border-iot-border-focus rounded px-2 py-0.5 text-xs text-iot-text-primary focus:outline-none focus:ring-1 focus:ring-iot-border-focus/30 transition-colors duration-150 min-w-0"
                               autoFocus
                               onClick={(e) => e.stopPropagation()}
                               onKeyDown={(e) => {
@@ -291,35 +291,38 @@ export const SubscriptionManager: React.FC = () => {
                         className="flex items-center gap-0.5 flex-shrink-0"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <button
-                          onClick={() => handleStartRename(sub.id)}
-                          className="p-1 text-iot-text-disabled hover:text-iot-text-muted transition-colors rounded hover:bg-iot-bg-hover"
-                          title="Rename"
-                        >
-                          <Edit3 size={11} />
-                        </button>
-                        <button
-                          onClick={() => handleTogglePolling(sub.id)}
-                          className={`p-1 rounded transition-colors ${
-                            isActivePolling
-                              ? "text-iot-cyan hover:text-iot-cyan/70 hover:bg-iot-cyan/10"
-                              : "text-iot-text-disabled hover:text-iot-text-muted hover:bg-iot-bg-hover"
-                          }`}
-                          title={isActivePolling ? "Pause polling" : "Start polling"}
-                        >
-                          {isActivePolling ? (
-                            <Pause size={11} />
-                          ) : (
-                            <Play size={11} />
-                          )}
-                        </button>
-                        <button
-                          onClick={() => setDeleteTarget(sub.id)}
-                          className="p-1 text-iot-text-disabled hover:text-iot-red transition-colors rounded hover:bg-iot-red/10"
-                          title="Delete"
-                        >
-                          <Trash2 size={11} />
-                        </button>
+                        <Tooltip content="Rename">
+                          <button
+                            onClick={() => handleStartRename(sub.id)}
+                            className="p-1 text-iot-text-disabled hover:text-iot-text-muted transition-colors rounded hover:bg-iot-bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iot-border-focus focus-visible:ring-offset-1 focus-visible:ring-offset-iot-bg-base"
+                          >
+                            <Edit3 size={11} />
+                          </button>
+                        </Tooltip>
+                        <Tooltip content={isActivePolling ? "Pause polling" : "Start polling"}>
+                          <button
+                            onClick={() => handleTogglePolling(sub.id)}
+                            className={`p-1 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iot-border-focus focus-visible:ring-offset-1 focus-visible:ring-offset-iot-bg-base ${
+                              isActivePolling
+                                ? "text-iot-cyan hover:text-iot-cyan/70 hover:bg-iot-cyan/10"
+                                : "text-iot-text-disabled hover:text-iot-text-muted hover:bg-iot-bg-hover"
+                            }`}
+                          >
+                            {isActivePolling ? (
+                              <Pause size={11} />
+                            ) : (
+                              <Play size={11} />
+                            )}
+                          </button>
+                        </Tooltip>
+                        <Tooltip content="Delete subscription">
+                          <button
+                            onClick={() => setDeleteTarget(sub.id)}
+                            className="p-1 text-iot-text-disabled hover:text-iot-red transition-colors rounded hover:bg-iot-red/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iot-border-focus focus-visible:ring-offset-1 focus-visible:ring-offset-iot-bg-base"
+                          >
+                            <Trash2 size={11} />
+                          </button>
+                        </Tooltip>
                       </div>
                     </div>
 
@@ -334,7 +337,7 @@ export const SubscriptionManager: React.FC = () => {
                         {sub.monitored_items.length} items
                       </Badge>
                       {isStale && <Badge variant="warning">Stale</Badge>}
-                      {status.lastError && <Badge variant="warning">Error</Badge>}
+                      {status.lastError && <Badge variant="danger">Poll Error</Badge>}
                     </div>
 
                     {/* Item preview (show first few items) */}

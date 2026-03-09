@@ -60,6 +60,11 @@ const POLL_COMMANDS = new Set([
   "opcua_poll_subscription",
   "opcua_poll_events",
   "opcua_get_backend_logs",
+  "mqtt_poll_messages",
+  "mqtt_get_topics",
+  "mqtt_get_broker_stats",
+  "mqtt_get_broker_clients",
+  "mqtt_get_connection_status",
 ]);
 
 export function withLogging<TArgs extends unknown[], TResult>(

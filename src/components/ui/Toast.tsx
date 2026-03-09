@@ -55,6 +55,7 @@ const ToastItem: React.FC<{
   }, [duration, dismiss]);
 
   const c = colors[type];
+  const ariaRole = type === "error" || type === "warning" ? "alert" : "status";
 
   return (
     <div
@@ -66,7 +67,7 @@ const ToastItem: React.FC<{
         "bg-iot-bg-surface/95",
         exiting ? "toast-exit" : "toast-enter"
       )}
-      role="alert"
+      role={ariaRole}
     >
       <span className={clsx("flex-shrink-0 mt-0.5", c.icon)}>{icons[type]}</span>
       <div className="flex-1 min-w-0">

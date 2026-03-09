@@ -3,7 +3,7 @@ import { useBrowserStore } from "@/stores/browserStore";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
 import { useAppStore } from "@/stores/appStore";
-import { Panel, Badge, Spinner, EmptyState, Button, Tabs } from "@/components/ui";
+import { Panel, Badge, Spinner, EmptyState, Button, Tabs, Tooltip } from "@/components/ui";
 import { MonitorDialog } from "@/components/opcua/MonitorDialog";
 import { toast } from "@/stores/notificationStore";
 import * as opcua from "@/services/opcua";
@@ -218,7 +218,8 @@ export const NodeAttributePanel: React.FC = () => {
           <select
             value={refreshInterval}
             onChange={(e) => setRefreshInterval(Number(e.target.value))}
-            className="bg-iot-bg-base border border-iot-border rounded px-1.5 py-0.5 text-2xs text-iot-text-muted focus:outline-none"
+            className="bg-iot-bg-base border border-iot-border rounded px-1.5 py-0.5 pr-6 text-2xs text-iot-text-muted appearance-none focus:outline-none focus:border-iot-border-focus focus:ring-1 focus:ring-iot-border-focus/30 transition-colors duration-150"
+            style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`, backgroundRepeat: "no-repeat", backgroundPosition: "right 4px center" }}
           >
             <option value={1000}>1s</option>
             <option value={2000}>2s</option>
@@ -231,7 +232,7 @@ export const NodeAttributePanel: React.FC = () => {
             title={autoRefresh ? "Stop auto-refresh" : "Start auto-refresh"}
           >
             <RefreshCw size={11} className={autoRefresh ? "animate-spin" : ""} />
-            {autoRefresh ? "Auto" : "Auto"}
+            {autoRefresh ? "Stop" : "Auto"}
           </Button>
           <Button variant="secondary" size="xs" onClick={handleRefresh} title="Refresh now">
             <RefreshCw size={11} />
@@ -266,10 +267,11 @@ export const NodeAttributePanel: React.FC = () => {
               <p className="text-2xs font-mono text-iot-text-muted">{details.node_id}</p>
               <button
                 onClick={handleCopyNodeId}
-                className="text-iot-text-disabled hover:text-iot-text-muted transition-colors"
-                title="Copy Node ID"
+                className="text-iot-text-disabled hover:text-iot-text-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iot-border-focus focus-visible:ring-offset-1 focus-visible:ring-offset-iot-bg-base rounded"
               >
-                <Copy size={10} />
+                <Tooltip content="Copy Node ID">
+                  <Copy size={10} />
+                </Tooltip>
               </button>
             </div>
             {details.description && details.description !== "[null]" && (
@@ -292,16 +294,17 @@ export const NodeAttributePanel: React.FC = () => {
                 <span className="data-label">Value</span>
                 {isWritable ? (
                   !isEditing ? (
-                    <button
-                      onClick={() => {
-                        setEditValue(details.value || "");
-                        setIsEditing(true);
-                      }}
-                      className="text-iot-text-disabled hover:text-iot-cyan transition-colors"
-                      title="Edit value"
-                    >
-                      <Edit3 size={10} />
-                    </button>
+                    <Tooltip content="Edit value">
+                      <button
+                        onClick={() => {
+                          setEditValue(details.value || "");
+                          setIsEditing(true);
+                        }}
+                        className="text-iot-text-disabled hover:text-iot-cyan transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iot-border-focus focus-visible:ring-offset-1 focus-visible:ring-offset-iot-bg-base rounded"
+                      >
+                        <Edit3 size={10} />
+                      </button>
+                    </Tooltip>
                   ) : null
                 ) : null}
               </div>
@@ -311,7 +314,7 @@ export const NodeAttributePanel: React.FC = () => {
                     type="text"
                     value={editValue}
                     onChange={(e) => setEditValue(e.target.value)}
-                    className="flex-1 bg-iot-bg-base border border-iot-border-focus rounded px-1.5 py-0.5 text-xs font-mono text-iot-text-primary focus:outline-none"
+                    className="flex-1 bg-iot-bg-base border border-iot-border-focus rounded px-1.5 py-0.5 text-xs font-mono text-iot-text-primary focus:outline-none focus:ring-1 focus:ring-iot-border-focus/30 transition-colors duration-150"
                     autoFocus
                     onKeyDown={(e) => {
                       if (e.key === "Enter") handleInlineWrite();

@@ -17,7 +17,7 @@ export const Button: React.FC<ButtonProps> = ({
   ...props
 }) => {
   const base =
-    "inline-flex items-center justify-center gap-1.5 font-medium rounded transition-all duration-150 no-select border";
+    "inline-flex items-center justify-center gap-1.5 font-medium rounded transition-all duration-150 no-select border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iot-border-focus focus-visible:ring-offset-1 focus-visible:ring-offset-iot-bg-base";
   const sizes = {
     xs: "px-2 py-0.5 text-2xs",
     sm: "px-3 py-1.5 text-xs",

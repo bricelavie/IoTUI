@@ -360,7 +360,7 @@ export const AddressSpaceTree: React.FC = () => {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Filter nodes..."
-            className="w-full bg-iot-bg-base border border-iot-border rounded pl-7 pr-2 py-1 text-xs text-iot-text-primary placeholder:text-iot-text-disabled focus:outline-none focus:border-iot-border-focus transition-colors"
+            className="w-full bg-iot-bg-base border border-iot-border rounded pl-7 pr-2 py-1 text-xs text-iot-text-primary placeholder:text-iot-text-disabled focus:outline-none focus:border-iot-border-focus focus:ring-1 focus:ring-iot-border-focus/30 transition-colors duration-150"
           />
         </div>
       </div>
@@ -374,7 +374,7 @@ export const AddressSpaceTree: React.FC = () => {
             description="Connect to a server to browse"
           />
         ) : (
-          <div className="py-1">
+          <div className="py-1" role="tree">
             {tree.map((item) => (
               <TreeNode
                 key={item.node.node_id}

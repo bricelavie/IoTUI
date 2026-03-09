@@ -1,7 +1,7 @@
 import React, { useMemo, useRef, useEffect, useState, useCallback } from "react";
 import { clsx } from "clsx";
 import { useLogStore } from "@/stores/logStore";
-import { Badge, EmptyState, Button } from "@/components/ui";
+import { Badge, EmptyState, Button, Tooltip } from "@/components/ui";
 import {
   ScrollText,
   Pause,
@@ -31,11 +31,11 @@ const LEVEL_CONFIG: Record<LogLevel, { label: string; color: string; badge: "dan
 };
 
 const CATEGORY_CONFIG: Record<LogCategory, { label: string; color: string }> = {
-  ipc:          { label: "IPC", color: "text-violet-400" },
-  backend:      { label: "BACK", color: "text-emerald-400" },
-  subscription: { label: "SUB", color: "text-sky-400" },
-  connection:   { label: "CONN", color: "text-amber-400" },
-  action:       { label: "ACT", color: "text-pink-400" },
+  ipc:          { label: "IPC", color: "text-iot-purple" },
+  backend:      { label: "BACK", color: "text-iot-cyan" },
+  subscription: { label: "SUB", color: "text-iot-blue" },
+  connection:   { label: "CONN", color: "text-iot-amber" },
+  action:       { label: "ACT", color: "text-iot-red" },
 };
 
 const ALL_LEVELS: LogLevel[] = ["error", "warn", "info", "debug", "trace"];
@@ -204,20 +204,26 @@ export const LogPanel: React.FC = () => {
             {isPaused ? <Play size={12} /> : <Pause size={12} />}
             {isPaused ? "Resume" : "Pause"}
           </Button>
-          <Button
-            variant="ghost"
-            size="xs"
-            onClick={toggleAutoScroll}
-            className={autoScroll ? "text-iot-cyan" : ""}
-          >
-            <ArrowDownToLine size={12} />
-          </Button>
-          <Button variant="ghost" size="xs" onClick={handleExport}>
-            <Download size={12} />
-          </Button>
-          <Button variant="ghost" size="xs" onClick={clear}>
-            <Trash2 size={12} />
-          </Button>
+          <Tooltip content={autoScroll ? "Auto-scroll on" : "Auto-scroll off"}>
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={toggleAutoScroll}
+              className={autoScroll ? "text-iot-cyan" : ""}
+            >
+              <ArrowDownToLine size={12} />
+            </Button>
+          </Tooltip>
+          <Tooltip content="Export logs">
+            <Button variant="ghost" size="xs" onClick={handleExport}>
+              <Download size={12} />
+            </Button>
+          </Tooltip>
+          <Tooltip content="Clear logs">
+            <Button variant="ghost" size="xs" onClick={clear}>
+              <Trash2 size={12} />
+            </Button>
+          </Tooltip>
           {!isPaused && (
             <span className="flex items-center gap-1 text-2xs text-iot-cyan">
               <span className="w-1.5 h-1.5 rounded-full bg-iot-cyan animate-pulse-slow" />
@@ -299,7 +305,7 @@ export const LogPanel: React.FC = () => {
                 placeholder="Search logs..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="bg-iot-bg-base border border-iot-border rounded pl-7 pr-6 py-0.5 text-2xs text-iot-text-secondary focus:outline-none focus:border-iot-border-focus w-48"
+                className="bg-iot-bg-base border border-iot-border rounded pl-7 pr-6 py-0.5 text-2xs text-iot-text-secondary focus:outline-none focus:border-iot-border-focus focus:ring-1 focus:ring-iot-border-focus/30 transition-colors duration-150 w-48"
               />
               {searchQuery && (
                 <button

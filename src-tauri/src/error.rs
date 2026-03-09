@@ -18,6 +18,9 @@ pub enum AppError {
 
     #[error("Security error: {0}")]
     Security(String),
+
+    #[error("MQTT error: {0}")]
+    Mqtt(String),
 }
 
 impl AppError {
@@ -41,6 +44,10 @@ impl AppError {
         Self::Security(message.into())
     }
 
+    pub fn mqtt(message: impl Into<String>) -> Self {
+        Self::Mqtt(message.into())
+    }
+
     fn kind(&self) -> &'static str {
         match self {
             Self::OpcUa(_) => "OpcUa",
@@ -48,6 +55,7 @@ impl AppError {
             Self::NotFound(_) => "NotFound",
             Self::InvalidArgument(_) => "InvalidArgument",
             Self::Security(_) => "Security",
+            Self::Mqtt(_) => "Mqtt",
         }
     }
 
@@ -57,7 +65,8 @@ impl AppError {
             | Self::Connection(m)
             | Self::NotFound(m)
             | Self::InvalidArgument(m)
-            | Self::Security(m) => m,
+            | Self::Security(m)
+            | Self::Mqtt(m) => m,
         }
     }
 }

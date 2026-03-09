@@ -43,6 +43,11 @@ const config: Config = {
           DEFAULT: "#a855f7",
           dim: "#a855f720",
         },
+        "iot-green": {
+          DEFAULT: "#22c55e",
+          dim: "#22c55e20",
+          muted: "#22c55e60",
+        },
         // Text
         "iot-text": {
           primary: "#f0f4f8",

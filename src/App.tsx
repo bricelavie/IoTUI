@@ -15,9 +15,19 @@ import { Dashboard } from "@/components/opcua/Dashboard";
 import { EventViewer } from "@/components/opcua/EventViewer";
 import { LogPanel } from "@/components/opcua/LogPanel";
 import { SettingsPanel } from "@/components/opcua/SettingsPanel";
+// MQTT components
+import { MqttConnectionPanel } from "@/components/mqtt/MqttConnectionPanel";
+import { MqttExplorer } from "@/components/mqtt/MqttExplorer";
+import { MqttDashboard } from "@/components/mqtt/MqttDashboard";
+import { BrokerAdminPanel } from "@/components/mqtt/BrokerAdminPanel";
+
 import { useAppStore } from "@/stores/appStore";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
+import { useMqttConnectionStore } from "@/stores/mqttConnectionStore";
+import { useMqttSubscriptionStore } from "@/stores/mqttSubscriptionStore";
+import { useMqttTopicStore } from "@/stores/mqttTopicStore";
+import { useMqttBrokerStore } from "@/stores/mqttBrokerStore";
 import { startBackendLogPolling, stopBackendLogPolling } from "@/services/logger";
 import type { ViewMode } from "@/types/opcua";
 
@@ -96,19 +106,66 @@ class ErrorBoundary extends React.Component<
   }
 }
 
-function MainContent() {
-  const { activeView } = useAppStore();
+// ─── MQTT Content Routing ────────────────────────────────────────
+
+function MqttContent({ view }: { view: ViewMode }) {
+  const { activeConnectionId } = useMqttConnectionStore();
+
+  if (view === "mqtt_connection") {
+    return <MqttConnectionPanel />;
+  }
+
+  // Shared views (logs, settings) are protocol-agnostic
+  if (view === "logs") {
+    return <LogPanel />;
+  }
+  if (view === "settings") {
+    return <SettingsPanel />;
+  }
+
+  // All other MQTT views require an active connection
+  if (!activeConnectionId) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="text-center">
+          <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-iot-bg-elevated border border-iot-border flex items-center justify-center">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-iot-text-disabled">
+              <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+            </svg>
+          </div>
+          <p className="text-sm text-iot-text-secondary font-medium">No Active Connection</p>
+          <p className="text-xs text-iot-text-muted mt-1">Connect to an MQTT broker to get started</p>
+        </div>
+      </div>
+    );
+  }
+
+  switch (view) {
+    case "mqtt_explorer":
+      return <MqttExplorer />;
+    case "mqtt_dashboard":
+      return <MqttDashboard />;
+    case "mqtt_broker_admin":
+      return <BrokerAdminPanel />;
+    default:
+      return <MqttConnectionPanel />;
+  }
+}
+
+// ─── OPC UA Content Routing ──────────────────────────────────────
+
+function OpcUaContent({ view }: { view: ViewMode }) {
   const { activeConnectionId } = useConnectionStore();
 
-  if (activeView === "connection") {
+  if (view === "connection") {
     return <ConnectionPanel />;
   }
 
-  if (activeView === "logs") {
+  if (view === "logs") {
     return <LogPanel />;
   }
 
-  if (activeView === "settings") {
+  if (view === "settings") {
     return <SettingsPanel />;
   }
 
@@ -128,7 +185,7 @@ function MainContent() {
     );
   }
 
-  switch (activeView) {
+  switch (view) {
     case "browse":
       return (
         <div className="flex h-full">
@@ -166,48 +223,163 @@ function MainContent() {
   }
 }
 
+// ─── Main Content Router ─────────────────────────────────────────
+
+function MainContent() {
+  const { activeView, activeProtocol } = useAppStore();
+
+  if (activeProtocol === "mqtt") {
+    return <MqttContent view={activeView} />;
+  }
+
+  return <OpcUaContent view={activeView} />;
+}
+
+// ─── App ─────────────────────────────────────────────────────────
+
 export default function App() {
   const setActiveView = useAppStore((s) => s.setActiveView);
-  const disconnect = useConnectionStore((s) => s.disconnect);
-  const activeConnectionId = useConnectionStore((s) => s.activeConnectionId);
-  const refreshConnections = useConnectionStore((s) => s.refreshConnections);
-  const refreshStatusForActiveConnection = useConnectionStore((s) => s.refreshStatusForActiveConnection);
-  const refreshSubscriptions = useSubscriptionStore((s) => s.refreshSubscriptions);
+  const activeProtocol = useAppStore((s) => s.activeProtocol);
   const activeView = useAppStore((s) => s.activeView);
 
-  // Start backend log polling on mount
+  // OPC UA stores
+  const opcuaDisconnect = useConnectionStore((s) => s.disconnect);
+  const opcuaActiveConnectionId = useConnectionStore((s) => s.activeConnectionId);
+  const opcuaRefreshConnections = useConnectionStore((s) => s.refreshConnections);
+  const opcuaRefreshStatus = useConnectionStore((s) => s.refreshStatusForActiveConnection);
+  const opcuaRefreshSubscriptions = useSubscriptionStore((s) => s.refreshSubscriptions);
+
+  // MQTT stores
+  const mqttActiveConnectionId = useMqttConnectionStore((s) => s.activeConnectionId);
+  const mqttDisconnect = useMqttConnectionStore((s) => s.disconnect);
+  const mqttRefreshConnections = useMqttConnectionStore((s) => s.refreshConnections);
+  const mqttRefreshStatus = useMqttConnectionStore((s) => s.refreshStatusForActiveConnection);
+  const mqttRefreshSubscriptions = useMqttSubscriptionStore((s) => s.refreshSubscriptions);
+  const mqttStartPolling = useMqttSubscriptionStore((s) => s.startPolling);
+  const mqttStopPolling = useMqttSubscriptionStore((s) => s.stopPolling);
+  const mqttMessages = useMqttSubscriptionStore((s) => s.messages);
+  const mqttAddMessages = useMqttTopicStore((s) => s.addMessages);
+  const mqttRefreshTopics = useMqttTopicStore((s) => s.refreshTopics);
+  const mqttClearTopics = useMqttTopicStore((s) => s.clearAll);
+  const mqttBrokerClearAll = useMqttBrokerStore((s) => s.clearAll);
+  const mqttSubClearAll = useMqttSubscriptionStore((s) => s.clearAll);
+
+  // ─── Backend log polling (always on) ───────────────────────────
   useEffect(() => {
     startBackendLogPolling();
     return () => stopBackendLogPolling();
   }, []);
 
-  useEffect(() => {
-    void refreshConnections();
-  }, [refreshConnections]);
+  // ─── OPC UA lifecycle effects ──────────────────────────────────
 
+  // Refresh OPC UA connections on mount / when protocol is opcua
   useEffect(() => {
-    if (!activeConnectionId) return;
-    void refreshSubscriptions(activeConnectionId);
-  }, [activeConnectionId, refreshSubscriptions]);
+    if (activeProtocol !== "opcua") return;
+    void opcuaRefreshConnections();
+  }, [activeProtocol, opcuaRefreshConnections]);
 
+  // OPC UA subscription refresh when connection changes
   useEffect(() => {
-    if (!activeConnectionId) return;
-    void refreshStatusForActiveConnection();
+    if (activeProtocol !== "opcua") return;
+    if (!opcuaActiveConnectionId) return;
+    void opcuaRefreshSubscriptions(opcuaActiveConnectionId);
+  }, [activeProtocol, opcuaActiveConnectionId, opcuaRefreshSubscriptions]);
+
+  // OPC UA status polling
+  useEffect(() => {
+    if (activeProtocol !== "opcua") return;
+    if (!opcuaActiveConnectionId) return;
+    void opcuaRefreshStatus();
     const interval = setInterval(() => {
-      void refreshStatusForActiveConnection();
+      void opcuaRefreshStatus();
     }, 3000);
     return () => clearInterval(interval);
-  }, [activeConnectionId, refreshStatusForActiveConnection]);
+  }, [activeProtocol, opcuaActiveConnectionId, opcuaRefreshStatus]);
 
+  // Redirect to connection view when OPC UA connection is lost
   useEffect(() => {
-    if (!activeConnectionId && activeView !== "connection" && activeView !== "logs" && activeView !== "settings") {
+    if (activeProtocol !== "opcua") return;
+    if (!opcuaActiveConnectionId && activeView !== "connection" && activeView !== "logs" && activeView !== "settings") {
       setActiveView("connection");
     }
-  }, [activeConnectionId, activeView, setActiveView]);
+  }, [activeProtocol, opcuaActiveConnectionId, activeView, setActiveView]);
 
-  // Global keyboard shortcuts
+  // ─── MQTT lifecycle effects ────────────────────────────────────
+
+  // Refresh MQTT connections on mount / when protocol is mqtt
   useEffect(() => {
-    const viewShortcuts: Record<string, ViewMode> = {
+    if (activeProtocol !== "mqtt") return;
+    void mqttRefreshConnections();
+  }, [activeProtocol, mqttRefreshConnections]);
+
+  // Start/stop MQTT message polling when connection changes
+  useEffect(() => {
+    if (activeProtocol !== "mqtt" || !mqttActiveConnectionId) {
+      mqttStopPolling();
+      return;
+    }
+
+    // Refresh subscriptions for the new connection
+    void mqttRefreshSubscriptions(mqttActiveConnectionId);
+    void mqttRefreshTopics(mqttActiveConnectionId);
+
+    // Start polling messages
+    mqttStartPolling(mqttActiveConnectionId);
+
+    return () => {
+      mqttStopPolling();
+    };
+  }, [activeProtocol, mqttActiveConnectionId, mqttRefreshSubscriptions, mqttRefreshTopics, mqttStartPolling, mqttStopPolling]);
+
+  // MQTT status polling
+  useEffect(() => {
+    if (activeProtocol !== "mqtt") return;
+    if (!mqttActiveConnectionId) return;
+    void mqttRefreshStatus();
+    const interval = setInterval(() => {
+      void mqttRefreshStatus();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [activeProtocol, mqttActiveConnectionId, mqttRefreshStatus]);
+
+  // Feed polled messages into topic store
+  useEffect(() => {
+    if (mqttMessages.length > 0) {
+      mqttAddMessages(mqttMessages);
+    }
+  }, [mqttMessages, mqttAddMessages]);
+
+  // Periodically refresh MQTT topics while connected
+  useEffect(() => {
+    if (activeProtocol !== "mqtt" || !mqttActiveConnectionId) return;
+    const interval = setInterval(() => {
+      void mqttRefreshTopics(mqttActiveConnectionId);
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [activeProtocol, mqttActiveConnectionId, mqttRefreshTopics]);
+
+  // Redirect to mqtt_connection view when MQTT connection is lost
+  useEffect(() => {
+    if (activeProtocol !== "mqtt") return;
+    const mqttViews: ViewMode[] = ["mqtt_explorer", "mqtt_dashboard", "mqtt_broker_admin"];
+    if (!mqttActiveConnectionId && mqttViews.includes(activeView as ViewMode)) {
+      setActiveView("mqtt_connection");
+    }
+  }, [activeProtocol, mqttActiveConnectionId, activeView, setActiveView]);
+
+  // Clean up MQTT stores when switching away from MQTT protocol
+  useEffect(() => {
+    if (activeProtocol !== "mqtt") {
+      mqttSubClearAll();
+      mqttClearTopics();
+      mqttBrokerClearAll();
+    }
+  }, [activeProtocol, mqttSubClearAll, mqttClearTopics, mqttBrokerClearAll]);
+
+  // ─── Global keyboard shortcuts ────────────────────────────────
+
+  useEffect(() => {
+    const opcuaShortcuts: Record<string, ViewMode> = {
       "1": "connection",
       "2": "browse",
       "3": "subscriptions",
@@ -219,31 +391,42 @@ export default function App() {
       "9": "settings",
     };
 
+    const mqttShortcuts: Record<string, ViewMode> = {
+      "1": "mqtt_connection",
+      "2": "mqtt_explorer",
+      "3": "mqtt_dashboard",
+      "4": "mqtt_broker_admin",
+      "5": "logs",
+      "6": "settings",
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
 
+      const shortcuts = activeProtocol === "mqtt" ? mqttShortcuts : opcuaShortcuts;
+
       // Ctrl/Cmd+1-9 for view navigation
-      if (mod && viewShortcuts[e.key]) {
+      if (mod && shortcuts[e.key]) {
         e.preventDefault();
-        setActiveView(viewShortcuts[e.key]);
+        setActiveView(shortcuts[e.key]);
         return;
       }
 
       // Ctrl/Cmd+D to disconnect
       if (mod && e.key === "d") {
         e.preventDefault();
-        if (activeConnectionId) {
-          disconnect(activeConnectionId);
+        if (activeProtocol === "mqtt" && mqttActiveConnectionId) {
+          mqttDisconnect(mqttActiveConnectionId);
+        } else if (activeProtocol === "opcua" && opcuaActiveConnectionId) {
+          opcuaDisconnect(opcuaActiveConnectionId);
         }
         return;
       }
-
-      // Escape to close modals (handled by modal components, but also resets focus)
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [setActiveView, disconnect, activeConnectionId]);
+  }, [setActiveView, activeProtocol, opcuaDisconnect, opcuaActiveConnectionId, mqttDisconnect, mqttActiveConnectionId]);
 
   return (
     <AppShell>

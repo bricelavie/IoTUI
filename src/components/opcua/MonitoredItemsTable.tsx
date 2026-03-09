@@ -197,7 +197,7 @@ export const MonitoredItemsTable: React.FC = () => {
             </span>
           )}
           {isStale && <Badge variant="warning">Stale</Badge>}
-          {activeStatus?.lastError && <Badge variant="warning">Polling issue</Badge>}
+          {activeStatus?.lastError && <Badge variant="danger">Poll Error</Badge>}
           <Badge variant="info">{monitoredItems.length} items</Badge>
         </div>
       }

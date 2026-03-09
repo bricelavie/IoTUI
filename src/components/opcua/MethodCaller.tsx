@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useAppStore } from "@/stores/appStore";
 import { Panel, Button, Input, Card, Badge, EmptyState } from "@/components/ui";
+import { ConfirmDialog } from "@/components/ui/Modal";
 import {
   Play,
   Search,
@@ -171,6 +172,7 @@ export const MethodCaller: React.FC = () => {
   const [history, setHistory] = useState<CallHistoryEntry[]>([]);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [nextHistoryId, setNextHistoryId] = useState(1);
+  const [confirmClearHistory, setConfirmClearHistory] = useState(false);
 
   // Discover method info
   const handleDiscover = useCallback(
@@ -494,7 +496,7 @@ export const MethodCaller: React.FC = () => {
                   size="xs"
                   onClick={(e) => {
                     e.stopPropagation();
-                    setHistory([]);
+                    setConfirmClearHistory(true);
                   }}
                 >
                   <Trash2 size={11} />
@@ -538,8 +540,22 @@ export const MethodCaller: React.FC = () => {
                 ))}
               </div>
             )}
-          </Card>
-        )}
+            </Card>
+          )}
+
+        {/* Confirm clear history dialog */}
+        <ConfirmDialog
+          open={confirmClearHistory}
+          onClose={() => setConfirmClearHistory(false)}
+          onConfirm={() => {
+            setHistory([]);
+            setConfirmClearHistory(false);
+          }}
+          title="Clear Call History"
+          message={`Clear all ${history.length} history entries? This cannot be undone.`}
+          confirmLabel="Clear"
+          danger
+        />
       </div>
     </div>
   );

@@ -72,8 +72,10 @@ const ToggleField: React.FC<ToggleFieldProps> = ({
     <div className="flex items-center gap-1.5 flex-shrink-0">
       <div className="w-24 flex justify-end">
         <button
+          role="switch"
+          aria-checked={value}
           onClick={() => onChange(!value)}
-          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iot-border-focus focus-visible:ring-offset-1 focus-visible:ring-offset-iot-bg-base ${
             value
               ? "bg-iot-cyan/30 border border-iot-cyan/50"
               : "bg-iot-bg-elevated border border-iot-border"

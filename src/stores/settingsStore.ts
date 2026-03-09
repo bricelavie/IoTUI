@@ -34,6 +34,18 @@ export interface AppSettings {
   errorToastDuration: number;
   /** Normal toast duration (ms) */
   normalToastDuration: number;
+
+  // ─── MQTT ────────────────────────────────────────────────────
+  /** Default QoS for MQTT subscriptions (0, 1, 2) */
+  mqttDefaultQoS: number;
+  /** MQTT message poll interval (ms) */
+  mqttPollInterval: number;
+  /** Max MQTT messages retained per topic in the topic store */
+  mqttMaxMessagesPerTopic: number;
+  /** Max total MQTT messages in the message stream */
+  mqttMaxStreamMessages: number;
+  /** MQTT broker stats poll interval (ms) */
+  mqttBrokerStatsPollInterval: number;
 }
 
 interface SettingsStore extends AppSettings {
@@ -58,6 +70,12 @@ const DEFAULTS: AppSettings = {
 
   errorToastDuration: 8000,
   normalToastDuration: 4000,
+
+  mqttDefaultQoS: 0,
+  mqttPollInterval: 500,
+  mqttMaxMessagesPerTopic: 100,
+  mqttMaxStreamMessages: 1000,
+  mqttBrokerStatsPollInterval: 3000,
 };
 
 const SETTINGS_KEYS = Object.keys(DEFAULTS) as (keyof AppSettings)[];
