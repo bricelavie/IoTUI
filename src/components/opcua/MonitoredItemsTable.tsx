@@ -7,7 +7,7 @@ import { useAppStore } from "@/stores/appStore";
 import { Panel, Badge, EmptyState, Button } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ui/Modal";
 import { toast } from "@/stores/notificationStore";
-import { theme } from "@/utils/theme";
+import { getThemeColors } from "@/utils/theme";
 import {
   Trash2,
   Activity,
@@ -59,6 +59,7 @@ const SortHeader: React.FC<SortHeaderProps> = ({ field, sortField, sortDir, onSo
 );
 
 export const MonitoredItemsTable: React.FC = () => {
+  const themeColors = getThemeColors();
   const { activeConnectionId } = useConnectionStore();
   const {
     subscriptions,
@@ -296,10 +297,10 @@ export const MonitoredItemsTable: React.FC = () => {
                             height={24}
                             color={
                               trend === "up"
-                                ? theme.cyan
+                                ? themeColors.cyan
                                 : trend === "down"
-                                ? theme.amber
-                                : theme.text.muted
+                                ? themeColors.amber
+                                : themeColors.text.muted
                             }
                           />
                         </div>
@@ -364,6 +365,7 @@ export const MonitoredItemsTable: React.FC = () => {
 // ─── Expanded Row Detail ──────────────────────────────────────────
 
 const ExpandedRowDetail: React.FC<{ value: MonitoredValue }> = ({ value }) => {
+  const themeColors = getThemeColors();
   const stats = useMemo(() => computeStats(value.history), [value.history]);
   const hasNumericData = value.numericValue !== undefined && value.history.length > 1;
   const chartContainerRef = React.useRef<HTMLDivElement>(null);
@@ -378,7 +380,7 @@ const ExpandedRowDetail: React.FC<{ value: MonitoredValue }> = ({ value }) => {
             data={value.history}
             width={chartWidth}
             height={260}
-            color={theme.cyan}
+            color={themeColors.cyan}
             showGrid
             showAxis
             showControls

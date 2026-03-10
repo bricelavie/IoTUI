@@ -171,7 +171,6 @@ interface ModeCardProps {
   description: string;
   selected: boolean;
   onClick: () => void;
-  accentColor?: string;
 }
 
 export const ModeCard: React.FC<ModeCardProps> = ({
@@ -180,24 +179,15 @@ export const ModeCard: React.FC<ModeCardProps> = ({
   description,
   selected,
   onClick,
-  accentColor = "iot-cyan",
 }) => (
   <button
     onClick={onClick}
     className={clsx(
       "flex-1 flex flex-col items-center gap-3 p-6 rounded-xl border-2 transition-all duration-200 text-center group",
       selected
-        ? `bg-${accentColor}/5 border-${accentColor}/50 ring-2 ring-${accentColor}/20`
+        ? "bg-iot-cyan/5 border-iot-cyan/50 ring-2 ring-iot-cyan/20"
         : "bg-iot-bg-base border-iot-border hover:border-iot-border-light hover:bg-iot-bg-hover"
     )}
-    style={
-      selected
-        ? {
-            backgroundColor: `var(--color-${accentColor}, rgb(0 210 211)) / 0.05`,
-            borderColor: `var(--color-${accentColor}, rgb(0 210 211)) / 0.5`,
-          }
-        : undefined
-    }
   >
     <div
       className={clsx(

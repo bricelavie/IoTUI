@@ -10,6 +10,7 @@ export { EmptyState } from "./EmptyState";
 export { Spinner } from "./Spinner";
 export { Panel } from "./Panel";
 export { Tooltip } from "./Tooltip";
+export { ThemeSelector } from "./ThemeSelector";
 export {
   WizardStepIndicator,
   WizardContainer,

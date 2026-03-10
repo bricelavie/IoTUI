@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useCallback, useRef, useId, memo } from "react";
 import { Clock } from "lucide-react";
-import { theme } from "@/utils/theme";
+import { getThemeColors } from "@/utils/theme";
 
 interface DataPoint {
   timestamp: number;
@@ -39,12 +39,15 @@ export const RealtimeChart: React.FC<RealtimeChartProps> = memo(({
   data,
   width = 300,
   height = 120,
-  color = theme.cyan,
+  color,
   showGrid = true,
   showAxis = true,
   label,
   showControls = false,
 }) => {
+  const theme = getThemeColors();
+  const resolvedColor = color ?? theme.cyan;
+
   // ─── Trend control state ────────────────────────────────────────
   const uid = useId();
   const gradientId = `chart-grad-${uid.replace(/:/g, "")}`;
@@ -222,8 +225,8 @@ export const RealtimeChart: React.FC<RealtimeChartProps> = memo(({
         >
           <defs>
             <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={color} stopOpacity="0.15" />
-              <stop offset="100%" stopColor={color} stopOpacity="0" />
+              <stop offset="0%" stopColor={resolvedColor} stopOpacity="0.15" />
+              <stop offset="100%" stopColor={resolvedColor} stopOpacity="0" />
             </linearGradient>
           </defs>
 
@@ -248,7 +251,7 @@ export const RealtimeChart: React.FC<RealtimeChartProps> = memo(({
           <path
             d={linePath}
             fill="none"
-            stroke={color}
+            stroke={resolvedColor}
             strokeWidth={1.5}
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -261,14 +264,14 @@ export const RealtimeChart: React.FC<RealtimeChartProps> = memo(({
                 cx={points[points.length - 1].x}
                 cy={points[points.length - 1].y}
                 r={3}
-                fill={color}
-                style={{ filter: `drop-shadow(0 0 4px ${color})` }}
+                fill={resolvedColor}
+                style={{ filter: `drop-shadow(0 0 4px ${resolvedColor})` }}
               />
               <circle
                 cx={points[points.length - 1].x}
                 cy={points[points.length - 1].y}
                 r={7}
-                fill={color}
+                fill={resolvedColor}
                 opacity={0.15}
               />
             </>
@@ -302,10 +305,10 @@ export const RealtimeChart: React.FC<RealtimeChartProps> = memo(({
                 cx={tooltip.pt.x}
                 cy={tooltip.pt.y}
                 r={5}
-                fill={color}
+                fill={resolvedColor}
                 stroke={theme.text.primary}
                 strokeWidth={2}
-                style={{ filter: `drop-shadow(0 0 6px ${color})` }}
+                style={{ filter: `drop-shadow(0 0 6px ${resolvedColor})` }}
               />
               {/* Tooltip background */}
               <rect

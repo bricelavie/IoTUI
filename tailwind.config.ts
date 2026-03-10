@@ -1,5 +1,16 @@
 import type { Config } from "tailwindcss";
 
+/**
+ * Helper: reference a CSS custom-property that holds an RGB triplet.
+ * Tailwind's `<alpha-value>` placeholder lets opacity modifiers like
+ * `bg-iot-bg-base/50` still work:
+ *
+ *   rgb(var(--iot-bg-base) / <alpha-value>)
+ */
+function rgb(varName: string) {
+  return `rgb(var(${varName}) / <alpha-value>)`;
+}
+
 const config: Config = {
   content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],
   theme: {
@@ -7,53 +18,53 @@ const config: Config = {
       colors: {
         // Core backgrounds
         "iot-bg": {
-          base: "#080b12",
-          surface: "#0f1420",
-          elevated: "#161c2a",
-          hover: "#1c2333",
+          base: rgb("--iot-bg-base"),
+          surface: rgb("--iot-bg-surface"),
+          elevated: rgb("--iot-bg-elevated"),
+          hover: rgb("--iot-bg-hover"),
         },
         // Borders
         "iot-border": {
-          DEFAULT: "#1e2a3a",
-          light: "#2a3650",
-          focus: "#3b82f6",
+          DEFAULT: rgb("--iot-border"),
+          light: rgb("--iot-border-light"),
+          focus: rgb("--iot-border-focus"),
         },
         // Accent colors
         "iot-cyan": {
-          DEFAULT: "#00d4aa",
-          dim: "#00d4aa20",
-          muted: "#00d4aa60",
+          DEFAULT: rgb("--iot-cyan"),
+          dim: rgb("--iot-cyan"),      // consumers apply /12 opacity via class
+          muted: rgb("--iot-cyan"),    // consumers apply /38 opacity via class
         },
         "iot-amber": {
-          DEFAULT: "#f59e0b",
-          dim: "#f59e0b20",
-          muted: "#f59e0b60",
+          DEFAULT: rgb("--iot-amber"),
+          dim: rgb("--iot-amber"),
+          muted: rgb("--iot-amber"),
         },
         "iot-red": {
-          DEFAULT: "#ef4444",
-          dim: "#ef444420",
-          muted: "#ef444460",
+          DEFAULT: rgb("--iot-red"),
+          dim: rgb("--iot-red"),
+          muted: rgb("--iot-red"),
         },
         "iot-blue": {
-          DEFAULT: "#3b82f6",
-          dim: "#3b82f620",
-          muted: "#3b82f660",
+          DEFAULT: rgb("--iot-blue"),
+          dim: rgb("--iot-blue"),
+          muted: rgb("--iot-blue"),
         },
         "iot-purple": {
-          DEFAULT: "#a855f7",
-          dim: "#a855f720",
+          DEFAULT: rgb("--iot-purple"),
+          dim: rgb("--iot-purple"),
         },
         "iot-green": {
-          DEFAULT: "#22c55e",
-          dim: "#22c55e20",
-          muted: "#22c55e60",
+          DEFAULT: rgb("--iot-green"),
+          dim: rgb("--iot-green"),
+          muted: rgb("--iot-green"),
         },
         // Text
         "iot-text": {
-          primary: "#f0f4f8",
-          secondary: "#94a3b8",
-          muted: "#64748b",
-          disabled: "#475569",
+          primary: rgb("--iot-text-primary"),
+          secondary: rgb("--iot-text-secondary"),
+          muted: rgb("--iot-text-muted"),
+          disabled: rgb("--iot-text-disabled"),
         },
       },
       fontFamily: {
@@ -64,10 +75,14 @@ const config: Config = {
         "2xs": ["0.625rem", { lineHeight: "0.875rem" }],
       },
       boxShadow: {
-        "iot-glow-cyan": "0 0 20px rgba(0, 212, 170, 0.15)",
-        "iot-glow-amber": "0 0 20px rgba(245, 158, 11, 0.15)",
-        "iot-glow-red": "0 0 20px rgba(239, 68, 68, 0.15)",
-        "iot-glow-blue": "0 0 20px rgba(59, 130, 246, 0.15)",
+        "iot-glow-cyan":
+          "0 0 20px rgb(var(--iot-cyan) / 0.15)",
+        "iot-glow-amber":
+          "0 0 20px rgb(var(--iot-amber) / 0.15)",
+        "iot-glow-red":
+          "0 0 20px rgb(var(--iot-red) / 0.15)",
+        "iot-glow-blue":
+          "0 0 20px rgb(var(--iot-blue) / 0.15)",
         "iot-card":
           "0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2)",
         "iot-card-hover":
@@ -95,7 +110,7 @@ const config: Config = {
       },
       backgroundImage: {
         "grid-pattern":
-          "linear-gradient(rgba(30, 42, 58, 0.3) 1px, transparent 1px), linear-gradient(90deg, rgba(30, 42, 58, 0.3) 1px, transparent 1px)",
+          "linear-gradient(rgb(var(--iot-grid) / 0.3) 1px, transparent 1px), linear-gradient(90deg, rgb(var(--iot-grid) / 0.3) 1px, transparent 1px)",
         "gradient-radial": "radial-gradient(var(--tw-gradient-stops))",
       },
     },

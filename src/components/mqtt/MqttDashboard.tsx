@@ -3,6 +3,7 @@ import { useMqttSubscriptionStore } from "@/stores/mqttSubscriptionStore";
 import { useAppStore } from "@/stores/appStore";
 import { Card, Badge, Button, EmptyState } from "@/components/ui";
 import { LayoutDashboard, Activity } from "lucide-react";
+import { getThemeColors } from "@/utils/theme";
 
 interface NumericTopicData {
   topic: string;
@@ -26,8 +27,10 @@ function smartFormat(value: number): string {
 const Sparkline: React.FC<{ data: number[]; height?: number; color?: string }> = ({
   data,
   height = 80,
-  color = "#22d3ee",
+  color,
 }) => {
+  const themeColors = getThemeColors();
+  const resolvedColor = color ?? themeColors.cyan;
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(200);
 
@@ -60,7 +63,7 @@ const Sparkline: React.FC<{ data: number[]; height?: number; color?: string }> =
         <polyline
           points={points}
           fill="none"
-          stroke={color}
+          stroke={resolvedColor}
           strokeWidth="1.5"
           strokeLinejoin="round"
           strokeLinecap="round"

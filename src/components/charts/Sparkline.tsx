@@ -1,5 +1,5 @@
 import React, { useId, memo } from "react";
-import { theme } from "@/utils/theme";
+import { getThemeColors } from "@/utils/theme";
 
 interface SparklineProps {
   data: { timestamp: number; value: number }[];
@@ -13,9 +13,11 @@ export const Sparkline: React.FC<SparklineProps> = memo(({
   data,
   width = 80,
   height = 24,
-  color = theme.cyan,
+  color,
   strokeWidth = 1.5,
 }) => {
+  const theme = getThemeColors();
+  const resolvedColor = color ?? theme.cyan;
   const uid = useId();
   const gradientId = `spark-grad-${uid.replace(/:/g, "")}`;
 
@@ -47,8 +49,8 @@ export const Sparkline: React.FC<SparklineProps> = memo(({
     <svg width={width} height={height} className="flex-shrink-0">
       <defs>
         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.3" />
-          <stop offset="100%" stopColor={color} stopOpacity="0" />
+          <stop offset="0%" stopColor={resolvedColor} stopOpacity="0.3" />
+          <stop offset="100%" stopColor={resolvedColor} stopOpacity="0" />
         </linearGradient>
       </defs>
       <path
@@ -58,7 +60,7 @@ export const Sparkline: React.FC<SparklineProps> = memo(({
       <path
         d={pathD}
         fill="none"
-        stroke={color}
+        stroke={resolvedColor}
         strokeWidth={strokeWidth}
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -69,7 +71,7 @@ export const Sparkline: React.FC<SparklineProps> = memo(({
           cx={padding + innerWidth}
           cy={padding + innerHeight - ((values[values.length - 1] - min) / range) * innerHeight}
           r={2}
-          fill={color}
+          fill={resolvedColor}
         />
       )}
     </svg>

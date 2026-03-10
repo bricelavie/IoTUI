@@ -1,7 +1,7 @@
 import React from "react";
 import { useSettingsStore, type AppSettings } from "@/stores/settingsStore";
-import { Panel, Button, Card } from "@/components/ui/index";
-import { RotateCcw, Database, ScrollText, Bell, Activity } from "lucide-react";
+import { Panel, Button, Card, ThemeSelector } from "@/components/ui/index";
+import { RotateCcw, Database, ScrollText, Bell, Activity, Palette } from "lucide-react";
 
 // ─── Setting field component ─────────────────────────────────────
 
@@ -134,6 +134,19 @@ export const SettingsPanel: React.FC = () => {
       }
     >
       <div className="max-w-5xl w-full mx-auto space-y-4">
+        {/* Appearance */}
+        <Section icon={<Palette size={14} />} title="Appearance">
+          <div className="flex items-start justify-between gap-4 py-2">
+            <div className="flex-1 min-w-0">
+              <div className="text-xs font-medium text-iot-text-secondary">Theme</div>
+              <div className="text-2xs text-iot-text-muted mt-0.5">Choose a color scheme for the interface</div>
+            </div>
+            <div className="flex-shrink-0">
+              <ThemeSelector />
+            </div>
+          </div>
+        </Section>
+
         {/* Data & Subscriptions */}
         <Section icon={<Database size={14} />} title="Data & Subscriptions">
           <NumberField

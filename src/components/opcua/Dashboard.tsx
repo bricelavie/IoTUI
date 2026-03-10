@@ -6,10 +6,11 @@ import { RealtimeChart } from "@/components/charts/RealtimeChart";
 import { LayoutDashboard, FolderTree } from "lucide-react";
 import type { MonitoredValue } from "@/types/opcua";
 import { computeStats } from "@/utils/stats";
-import { theme } from "@/utils/theme";
+import { getThemeColors } from "@/utils/theme";
 import { useContainerWidth } from "@/hooks/useContainerWidth";
 
 const DashboardTile: React.FC<{ value: MonitoredValue }> = ({ value }) => {
+  const themeColors = getThemeColors();
   const stats = useMemo(() => computeStats(value.history), [value.history]);
   const hasNumericData = value.numericValue !== undefined && value.history.length > 1;
   const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -42,7 +43,7 @@ const DashboardTile: React.FC<{ value: MonitoredValue }> = ({ value }) => {
             data={value.history}
             width={chartWidth}
             height={150}
-            color={theme.cyan}
+            color={themeColors.cyan}
             showGrid
             showAxis
             showControls

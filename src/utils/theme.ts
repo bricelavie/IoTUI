@@ -1,4 +1,57 @@
-/** Shared design token constants for use in SVG/canvas contexts where Tailwind classes are unavailable. */
+/**
+ * Shared design-token accessor for SVG / canvas contexts where
+ * Tailwind classes are unavailable.
+ *
+ * Reads from the active theme palette exposed by the theme store,
+ * so colours always match the user's selected theme.
+ */
+
+import { getActiveThemePalette } from "@/stores/themeStore";
+
+/** Convert an RGB triplet string ("8 11 18") to a hex string ("#080b12"). */
+function tripletToHex(triplet: string): string {
+  const parts = triplet.split(" ").map(Number);
+  return (
+    "#" +
+    parts
+      .map((n) => n.toString(16).padStart(2, "0"))
+      .join("")
+  );
+}
+
+/** Resolve the current theme palette into hex colours for imperative use. */
+export function getThemeColors() {
+  const p = getActiveThemePalette();
+  return {
+    bg: {
+      base: tripletToHex(p.bg.base),
+      surface: tripletToHex(p.bg.surface),
+      elevated: tripletToHex(p.bg.elevated),
+      hover: tripletToHex(p.bg.hover),
+    },
+    border: {
+      DEFAULT: tripletToHex(p.border.default),
+      light: tripletToHex(p.border.light),
+    },
+    text: {
+      primary: tripletToHex(p.text.primary),
+      secondary: tripletToHex(p.text.secondary),
+      muted: tripletToHex(p.text.muted),
+      disabled: tripletToHex(p.text.disabled),
+    },
+    cyan: tripletToHex(p.accent.cyan),
+    amber: tripletToHex(p.accent.amber),
+    red: tripletToHex(p.accent.red),
+    blue: tripletToHex(p.accent.blue),
+    purple: tripletToHex(p.accent.purple),
+    green: tripletToHex(p.accent.green),
+  } as const;
+}
+
+/**
+ * @deprecated Use `getThemeColors()` instead for dynamic values.
+ * Kept for backward-compatibility: returns the static IoT-1 palette.
+ */
 export const theme = {
   bg: {
     base: "#080b12",

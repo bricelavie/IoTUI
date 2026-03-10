@@ -22,6 +22,7 @@ import { MqttDashboard } from "@/components/mqtt/MqttDashboard";
 import { BrokerAdminPanel } from "@/components/mqtt/BrokerAdminPanel";
 
 import { useAppStore } from "@/stores/appStore";
+import { useThemeStore } from "@/stores/themeStore";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
 import { useMqttConnectionStore } from "@/stores/mqttConnectionStore";
@@ -238,6 +239,12 @@ function MainContent() {
 // ─── App ─────────────────────────────────────────────────────────
 
 export default function App() {
+  // ─── Theme hydration (must run before anything renders) ────────
+  const hydrateTheme = useThemeStore((s) => s.hydrate);
+  useEffect(() => {
+    hydrateTheme();
+  }, [hydrateTheme]);
+
   const setActiveView = useAppStore((s) => s.setActiveView);
   const activeProtocol = useAppStore((s) => s.activeProtocol);
   const activeView = useAppStore((s) => s.activeView);
