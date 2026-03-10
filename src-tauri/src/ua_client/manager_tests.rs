@@ -84,6 +84,7 @@ mod tests {
                     start_time: None,
                     end_time: None,
                     max_values: Some(10),
+                    continuation_point: None,
                 },
             )
             .await

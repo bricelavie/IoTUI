@@ -8,7 +8,6 @@ use tokio::task::JoinHandle;
 
 use crate::error::{AppError, AppResult};
 use super::types::*;
-use super::simulator::detect_payload_format;
 
 /// Max incoming messages buffered for polling.
 const MAX_BUFFERED_MESSAGES: usize = 10_000;
@@ -27,6 +26,57 @@ fn from_rumqttc_qos(qos: QoS) -> MqttQoS {
         QoS::AtMostOnce => MqttQoS::AtMostOnce,
         QoS::AtLeastOnce => MqttQoS::AtLeastOnce,
         QoS::ExactlyOnce => MqttQoS::ExactlyOnce,
+    }
+}
+
+/// A TLS certificate verifier that accepts any certificate.
+/// Used when `accept_invalid_certs` is enabled in the connection config.
+#[derive(Debug)]
+struct NoVerifier;
+
+impl rumqttc::tokio_rustls::rustls::client::danger::ServerCertVerifier for NoVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rumqttc::tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rumqttc::tokio_rustls::rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rumqttc::tokio_rustls::rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rumqttc::tokio_rustls::rustls::pki_types::UnixTime,
+    ) -> Result<
+        rumqttc::tokio_rustls::rustls::client::danger::ServerCertVerified,
+        rumqttc::tokio_rustls::rustls::Error,
+    > {
+        Ok(rumqttc::tokio_rustls::rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rumqttc::tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+        _dss: &rumqttc::tokio_rustls::rustls::DigitallySignedStruct,
+    ) -> Result<
+        rumqttc::tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
+        rumqttc::tokio_rustls::rustls::Error,
+    > {
+        Ok(rumqttc::tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rumqttc::tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+        _dss: &rumqttc::tokio_rustls::rustls::DigitallySignedStruct,
+    ) -> Result<
+        rumqttc::tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
+        rumqttc::tokio_rustls::rustls::Error,
+    > {
+        Ok(rumqttc::tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rumqttc::tokio_rustls::rustls::SignatureScheme> {
+        rumqttc::tokio_rustls::rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -138,6 +188,10 @@ impl MqttClientConnection {
             for cert in certs {
                 root_cert_store.add(cert).map_err(|e| format!("Failed to add CA cert: {e}"))?;
             }
+        } else {
+            // No custom CA provided — load well-known root certificates so that
+            // connections to brokers using publicly-trusted CAs work out of the box.
+            root_cert_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         }
 
         // Load client certificate and key if provided
@@ -162,6 +216,29 @@ impl MqttClientConnection {
         } else {
             None
         };
+
+        // If accept_invalid_certs is set, skip certificate verification entirely.
+        // This is dangerous but useful for self-signed certs in dev/test environments.
+        if tls_config.accept_invalid_certs {
+            log::warn!("TLS: accept_invalid_certs is enabled — certificate verification is DISABLED");
+            let tls_client_config = if let Some((certs, key)) = client_auth {
+                rumqttc::tokio_rustls::rustls::ClientConfig::builder()
+                    .dangerous()
+                    .with_custom_certificate_verifier(Arc::new(NoVerifier))
+                    .with_client_auth_cert(
+                        certs.into_iter().map(|c| rumqttc::tokio_rustls::rustls::pki_types::CertificateDer::from(c.to_vec())).collect(),
+                        rumqttc::tokio_rustls::rustls::pki_types::PrivateKeyDer::try_from(key.secret_der().to_vec())
+                            .map_err(|e| format!("Invalid private key: {e}"))?,
+                    )
+                    .map_err(|e| format!("TLS client auth config error: {e}"))?
+            } else {
+                rumqttc::tokio_rustls::rustls::ClientConfig::builder()
+                    .dangerous()
+                    .with_custom_certificate_verifier(Arc::new(NoVerifier))
+                    .with_no_client_auth()
+            };
+            return Ok(Transport::Tls(TlsConfiguration::Rustls(Arc::new(tls_client_config))));
+        }
 
         let tls_config = if let Some((certs, key)) = client_auth {
             TlsConfiguration::Rustls(Arc::new(

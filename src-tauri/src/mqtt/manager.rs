@@ -8,13 +8,11 @@ use crate::error::{AppError, AppResult};
 
 use super::broker::EmbeddedBroker;
 use super::client::MqttClientConnection;
-use super::simulator::MqttSimulator;
 use super::types::*;
 
 // ─── Connection Backend ──────────────────────────────────────────
 
 enum MqttBackend {
-    Simulator,
     Client(Arc<Mutex<MqttClientConnection>>),
     Broker(Arc<Mutex<EmbeddedBroker>>),
 }
@@ -24,7 +22,7 @@ struct MqttConnectionState {
     status: MqttConnectionStatus,
     last_error: Option<String>,
     backend: MqttBackend,
-    /// Subscription tracking (for simulator and client modes)
+    /// Subscription tracking
     subscriptions: HashMap<u32, MqttSubState>,
 }
 
@@ -40,7 +38,6 @@ type SharedMqttState = Arc<RwLock<MqttConnectionState>>;
 
 pub struct MqttManager {
     connections: RwLock<HashMap<String, SharedMqttState>>,
-    simulator: MqttSimulator,
     next_sub_id: AtomicU32,
 }
 
@@ -48,7 +45,6 @@ impl MqttManager {
     pub fn new() -> Self {
         Self {
             connections: RwLock::new(HashMap::new()),
-            simulator: MqttSimulator::new(),
             next_sub_id: AtomicU32::new(1),
         }
     }
@@ -69,43 +65,35 @@ impl MqttManager {
     pub async fn connect(&self, config: MqttConnectionConfig) -> AppResult<String> {
         let id = uuid::Uuid::new_v4().to_string();
 
-        let backend = if config.use_simulator {
-            log::info!(
-                "MQTT: starting simulator connection '{}'",
-                config.name
-            );
-            MqttBackend::Simulator
-        } else {
-            match config.mode {
-                MqttMode::Client => {
-                    log::info!(
-                        "MQTT: connecting client '{}' to {}:{}",
-                        config.name,
-                        config.host,
-                        config.port
-                    );
-                    let conn = MqttClientConnection::connect(&config).await?;
-                    MqttBackend::Client(Arc::new(Mutex::new(conn)))
-                }
-                MqttMode::Broker => {
-                    let bind = config
-                        .broker_bind_address
-                        .as_deref()
-                        .unwrap_or("0.0.0.0");
-                    log::info!(
-                        "MQTT: starting embedded broker '{}' on {}:{}",
-                        config.name,
-                        bind,
-                        config.port
-                    );
-                    let broker = EmbeddedBroker::start(
-                        bind,
-                        config.port,
-                        config.broker_max_connections,
-                    )
-                    .await?;
-                    MqttBackend::Broker(Arc::new(Mutex::new(broker)))
-                }
+        let backend = match config.mode {
+            MqttMode::Client => {
+                log::info!(
+                    "MQTT: connecting client '{}' to {}:{}",
+                    config.name,
+                    config.host,
+                    config.port
+                );
+                let conn = MqttClientConnection::connect(&config).await?;
+                MqttBackend::Client(Arc::new(Mutex::new(conn)))
+            }
+            MqttMode::Broker => {
+                let bind = config
+                    .broker_bind_address
+                    .as_deref()
+                    .unwrap_or("0.0.0.0");
+                log::info!(
+                    "MQTT: starting embedded broker '{}' on {}:{}",
+                    config.name,
+                    bind,
+                    config.port
+                );
+                let broker = EmbeddedBroker::start(
+                    bind,
+                    config.port,
+                    config.broker_max_connections,
+                )
+                .await?;
+                MqttBackend::Broker(Arc::new(Mutex::new(broker)))
             }
         };
 
@@ -129,13 +117,8 @@ impl MqttManager {
             .remove(connection_id)
             .ok_or_else(|| AppError::not_found("MQTT connection not found"))?;
 
-        let backend = {
-            let mut guard = state.write().await;
-            guard.status = MqttConnectionStatus::Disconnected;
-            std::mem::replace(&mut guard.backend, MqttBackend::Simulator)
-        };
-
-        match backend {
+        let guard = state.read().await;
+        match &guard.backend {
             MqttBackend::Client(client) => {
                 let client = client.lock().await;
                 let _ = client.disconnect().await;
@@ -144,7 +127,6 @@ impl MqttManager {
                 let broker = broker.lock().await;
                 broker.stop();
             }
-            MqttBackend::Simulator => {}
         }
 
         Ok(())
@@ -157,13 +139,8 @@ impl MqttManager {
         };
 
         for state in all_states {
-            let backend = {
-                let mut guard = state.write().await;
-                guard.status = MqttConnectionStatus::Disconnected;
-                std::mem::replace(&mut guard.backend, MqttBackend::Simulator)
-            };
-
-            match backend {
+            let guard = state.read().await;
+            match &guard.backend {
                 MqttBackend::Client(client) => {
                     let client = client.lock().await;
                     let _ = client.disconnect().await;
@@ -172,7 +149,6 @@ impl MqttManager {
                     let broker = broker.lock().await;
                     broker.stop();
                 }
-                MqttBackend::Simulator => {}
             }
         }
     }
@@ -204,10 +180,12 @@ impl MqttManager {
                     .clone()
                     .unwrap_or_default(),
                 protocol_version: guard.config.protocol_version,
-                is_simulator: guard.config.use_simulator,
                 last_error: guard.last_error.clone(),
                 connected_clients: match &guard.backend {
-                    MqttBackend::Broker(_) => Some(0),
+                    MqttBackend::Broker(broker) => {
+                        let b = broker.lock().await;
+                        Some(b.active_connection_count())
+                    }
                     _ => None,
                 },
             });
@@ -238,7 +216,7 @@ impl MqttManager {
                 guard.status = MqttConnectionStatus::Reconnecting;
             }
         }
-        // Simulator and broker are always "connected" while present
+        // Broker is always "connected" while present
 
         Ok(guard.status.clone())
     }
@@ -255,29 +233,15 @@ impl MqttManager {
 
         // Determine backend type and clone Arc if needed
         enum BackendKind {
-            Simulator,
             Client(Arc<Mutex<MqttClientConnection>>),
             Broker,
         }
         let kind = match &guard.backend {
-            MqttBackend::Simulator => BackendKind::Simulator,
             MqttBackend::Client(c) => BackendKind::Client(c.clone()),
             MqttBackend::Broker(_) => BackendKind::Broker,
         };
 
         match kind {
-            BackendKind::Simulator => {
-                let info = self.simulator.subscribe(request);
-                guard.subscriptions.insert(
-                    info.id,
-                    MqttSubState {
-                        topic_filter: request.topic_filter.clone(),
-                        qos: request.qos,
-                        message_count: 0,
-                    },
-                );
-                Ok(info)
-            }
             BackendKind::Client(client) => {
                 let client = client.lock().await;
                 client
@@ -341,9 +305,6 @@ impl MqttManager {
             .ok_or_else(|| AppError::not_found("Subscription not found"))?;
 
         match &guard.backend {
-            MqttBackend::Simulator => {
-                self.simulator.unsubscribe(subscription_id);
-            }
             MqttBackend::Client(client) => {
                 let client = client.lock().await;
                 client.unsubscribe(&sub.topic_filter).await?;
@@ -363,22 +324,17 @@ impl MqttManager {
         let state = self.get_connection(connection_id).await?;
         let guard = state.read().await;
 
-        match &guard.backend {
-            MqttBackend::Simulator => Ok(self.simulator.get_subscriptions()),
-            MqttBackend::Client(_) | MqttBackend::Broker(_) => {
-                Ok(guard
-                    .subscriptions
-                    .iter()
-                    .map(|(id, sub)| MqttSubscriptionInfo {
-                        id: *id,
-                        topic_filter: sub.topic_filter.clone(),
-                        qos: sub.qos,
-                        message_count: sub.message_count,
-                        active: true,
-                    })
-                    .collect())
-            }
-        }
+        Ok(guard
+            .subscriptions
+            .iter()
+            .map(|(id, sub)| MqttSubscriptionInfo {
+                id: *id,
+                topic_filter: sub.topic_filter.clone(),
+                qos: sub.qos,
+                message_count: sub.message_count,
+                active: true,
+            })
+            .collect())
     }
 
     // ─── Publish ─────────────────────────────────────────────────
@@ -392,10 +348,6 @@ impl MqttManager {
         let guard = state.read().await;
 
         match &guard.backend {
-            MqttBackend::Simulator => {
-                self.simulator.publish(request);
-                Ok(())
-            }
             MqttBackend::Client(client) => {
                 let client = client.lock().await;
                 client
@@ -409,7 +361,6 @@ impl MqttManager {
             }
             MqttBackend::Broker(_) => {
                 // Publishing to the embedded broker would require a separate client
-                // For now, return an error. Users should connect a client to publish.
                 Err(AppError::mqtt(
                     "Cannot publish directly from broker mode. Connect an MQTT client to the broker to publish messages.",
                 ))
@@ -424,10 +375,9 @@ impl MqttManager {
         connection_id: &str,
     ) -> AppResult<MqttPollResponse> {
         let state = self.get_connection(connection_id).await?;
-        let guard = state.read().await;
+        let mut guard = state.write().await;
 
         let messages = match &guard.backend {
-            MqttBackend::Simulator => self.simulator.poll_messages(),
             MqttBackend::Client(client) => {
                 let client = client.lock().await;
                 client.poll_messages().await
@@ -437,6 +387,16 @@ impl MqttManager {
                 broker.poll_messages().await
             }
         };
+
+        // Increment per-subscription message counts by matching each message
+        // topic against the subscription filters.
+        for msg in &messages {
+            for sub in guard.subscriptions.values_mut() {
+                if mqtt_topic_matches(&sub.topic_filter, &msg.topic) {
+                    sub.message_count += 1;
+                }
+            }
+        }
 
         let topics_updated = !messages.is_empty();
         Ok(MqttPollResponse {
@@ -455,7 +415,6 @@ impl MqttManager {
         let guard = state.read().await;
 
         match &guard.backend {
-            MqttBackend::Simulator => Ok(self.simulator.get_topics()),
             MqttBackend::Broker(broker) => {
                 let broker = broker.lock().await;
                 Ok(broker.get_topics().await)
@@ -478,13 +437,12 @@ impl MqttManager {
         let guard = state.read().await;
 
         match &guard.backend {
-            MqttBackend::Simulator => Ok(self.simulator.get_broker_stats()),
             MqttBackend::Broker(broker) => {
                 let broker = broker.lock().await;
                 Ok(broker.get_stats())
             }
             MqttBackend::Client(_) => Err(AppError::mqtt(
-                "Broker stats are only available in broker or simulator mode",
+                "Broker stats are only available in broker mode",
             )),
         }
     }
@@ -497,13 +455,12 @@ impl MqttManager {
         let guard = state.read().await;
 
         match &guard.backend {
-            MqttBackend::Simulator => Ok(self.simulator.get_broker_clients()),
             MqttBackend::Broker(broker) => {
                 let broker = broker.lock().await;
                 Ok(broker.get_clients())
             }
             MqttBackend::Client(_) => Err(AppError::mqtt(
-                "Broker clients are only available in broker or simulator mode",
+                "Broker clients are only available in broker mode",
             )),
         }
     }
@@ -513,4 +470,35 @@ impl Default for MqttManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Check whether an MQTT topic matches a subscription filter per MQTT 3.1.1 Section 4.7.
+///
+/// - `+` matches exactly one topic level
+/// - `#` matches zero or more remaining levels (must be last segment)
+fn mqtt_topic_matches(filter: &str, topic: &str) -> bool {
+    let filter_parts: Vec<&str> = filter.split('/').collect();
+    let topic_parts: Vec<&str> = topic.split('/').collect();
+
+    let mut fi = 0;
+    let mut ti = 0;
+
+    while fi < filter_parts.len() {
+        let fp = filter_parts[fi];
+        if fp == "#" {
+            // '#' matches the rest of the topic
+            return true;
+        }
+        if ti >= topic_parts.len() {
+            return false;
+        }
+        if fp != "+" && fp != topic_parts[ti] {
+            return false;
+        }
+        fi += 1;
+        ti += 1;
+    }
+
+    // All filter parts consumed; topic must also be fully consumed
+    fi == filter_parts.len() && ti == topic_parts.len()
 }

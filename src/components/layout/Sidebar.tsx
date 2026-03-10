@@ -64,11 +64,11 @@ export const Sidebar: React.FC = () => {
   const { activeConnectionId: mqttConnectionId, connections: mqttConnections } = useMqttConnectionStore();
 
   const activeConnection = mqttConnections.find((c) => c.id === mqttConnectionId);
-  const isBrokerOrSim = activeConnection?.mode === "broker" || activeConnection?.is_simulator;
+  const isBrokerMode = activeConnection?.mode === "broker";
 
   // Filter broker admin unless connected in broker/simulator mode
   const navItems = activeProtocol === "mqtt"
-    ? mqttNavItems.filter((item) => item.id !== "mqtt_broker_admin" || isBrokerOrSim)
+    ? mqttNavItems.filter((item) => item.id !== "mqtt_broker_admin" || isBrokerMode)
     : opcuaNavItems;
   const hasConnection = activeProtocol === "mqtt" ? !!mqttConnectionId : !!opcuaConnectionId;
 

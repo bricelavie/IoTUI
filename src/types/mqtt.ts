@@ -47,7 +47,6 @@ export interface MqttConnectionConfig {
   clean_session: boolean;
   tls?: MqttTlsConfig | null;
   last_will?: MqttLastWill | null;
-  use_simulator: boolean;
   broker_bind_address?: string | null;
   broker_max_connections?: number | null;
 }
@@ -61,7 +60,6 @@ export interface MqttConnectionInfo {
   port: number;
   client_id: string;
   protocol_version: MqttProtocolVersion;
-  is_simulator: boolean;
   last_error?: string | null;
   connected_clients?: number | null;
 }

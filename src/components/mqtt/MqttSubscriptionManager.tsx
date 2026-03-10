@@ -21,6 +21,22 @@ const QOS_OPTIONS = [
   { value: "2", label: "QoS 2" },
 ];
 
+/**
+ * Check whether an MQTT topic matches a subscription filter per MQTT 3.1.1 Section 4.7.
+ * - `+` matches exactly one topic level
+ * - `#` matches zero or more remaining levels (must be last segment)
+ */
+function matchesMqttFilter(filter: string, topic: string): boolean {
+  const filterParts = filter.split("/");
+  const topicParts = topic.split("/");
+  for (let i = 0; i < filterParts.length; i++) {
+    if (filterParts[i] === "#") return true; // # matches rest
+    if (i >= topicParts.length) return false;
+    if (filterParts[i] !== "+" && filterParts[i] !== topicParts[i]) return false;
+  }
+  return filterParts.length === topicParts.length;
+}
+
 export const MqttSubscriptionManager: React.FC = () => {
   const { activeConnectionId } = useMqttConnectionStore();
   const {
@@ -48,18 +64,10 @@ export const MqttSubscriptionManager: React.FC = () => {
 
     for (const msg of messages) {
       for (const sub of subscriptions) {
-        // Simple check: if the message topic starts with the filter prefix
-        // or if the filter is # (matches all)
-        const filter = sub.topic_filter;
-        if (
-          filter === "#" ||
-          filter === msg.topic ||
-          (filter.endsWith("/#") && msg.topic.startsWith(filter.slice(0, -2))) ||
-          (filter.endsWith("/+") && msg.topic.startsWith(filter.slice(0, -2)))
-        ) {
-          const ts = subTimestamps.get(filter) ?? [];
+        if (matchesMqttFilter(sub.topic_filter, msg.topic)) {
+          const ts = subTimestamps.get(sub.topic_filter) ?? [];
           ts.push(msg.timestamp);
-          subTimestamps.set(filter, ts);
+          subTimestamps.set(sub.topic_filter, ts);
         }
       }
     }

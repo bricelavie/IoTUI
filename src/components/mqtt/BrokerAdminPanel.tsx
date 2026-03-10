@@ -34,11 +34,11 @@ export const BrokerAdminPanel: React.FC = () => {
   const { stats, clients, isPolling, error, startPolling, stopPolling } = useMqttBrokerStore();
 
   useEffect(() => {
-    if (activeConnectionId) {
+    if (activeConnectionId && activeConnection?.mode === "broker") {
       startPolling(activeConnectionId);
     }
     return () => stopPolling();
-  }, [activeConnectionId, startPolling, stopPolling]);
+  }, [activeConnectionId, activeConnection?.mode, startPolling, stopPolling]);
 
   if (!activeConnection) {
     return (

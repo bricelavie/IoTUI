@@ -34,6 +34,7 @@ rumqttc = { version = "0.24", features = ["use-rustls"] }
 rumqttd = "0.19"
 # TLS support for MQTT
 rustls-pemfile = "2"
+webpki-roots = "0.26"
 
 [features]
 default = []

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useMqttConnectionStore } from "@/stores/mqttConnectionStore";
 import { useMqttSubscriptionStore } from "@/stores/mqttSubscriptionStore";
 import { useMqttTopicStore } from "@/stores/mqttTopicStore";
@@ -6,22 +6,19 @@ import { useMqttBrokerStore } from "@/stores/mqttBrokerStore";
 import { useAppStore } from "@/stores/appStore";
 import { errorMessage } from "@/types/opcua";
 import type { MqttMode, MqttProtocolVersion, MqttAuthType, MqttQoS } from "@/types/mqtt";
-import { Button, Input, Select, Card, Badge, StatusDot, EmptyState, Checkbox, Tooltip } from "@/components/ui";
+import {
+  Button, Input, Select, Card, Badge, StatusDot, EmptyState, Checkbox, Tooltip,
+  WizardContainer, ModeCard, ReviewRow, ReviewSection,
+} from "@/components/ui";
+import type { WizardStep } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ui/Modal";
 import { toast } from "@/stores/notificationStore";
 import {
-  Zap,
-  Server,
-  Trash2,
-  Plus,
-  Save,
-  BookOpen,
-  AlertCircle,
-  Radio,
-  MonitorSmartphone,
-  Shield,
-  Wifi,
+  Server, Trash2, Plus, Save, BookOpen, AlertCircle, Radio, Shield, Wifi,
+  ChevronRight, Settings2, Lock,
 } from "lucide-react";
+
+// ─── Constants ───────────────────────────────────────────────────
 
 const PROTOCOL_VERSIONS = [
   { value: "v311", label: "MQTT 3.1.1" },
@@ -40,7 +37,7 @@ const QOS_OPTIONS = [
   { value: "2", label: "QoS 2 - Exactly once" },
 ];
 
-// ─── Saved profiles (localStorage) ──────────────────────────────
+// ─── Saved Profiles ──────────────────────────────────────────────
 
 interface SavedMqttProfile {
   id: string;
@@ -51,13 +48,11 @@ interface SavedMqttProfile {
   protocol_version: MqttProtocolVersion;
   auth_type: MqttAuthType;
   username?: string;
-  use_simulator: boolean;
   clean_session: boolean;
   keep_alive_secs?: number;
 }
 
 const MQTT_PROFILES_KEY = "iotui_mqtt_profiles";
-const MQTT_DRAFT_KEY = "iotui_mqtt_connection_draft_v1";
 
 function loadProfiles(): SavedMqttProfile[] {
   try {
@@ -71,33 +66,41 @@ function saveProfiles(profiles: SavedMqttProfile[]) {
   localStorage.setItem(MQTT_PROFILES_KEY, JSON.stringify(profiles));
 }
 
-function loadDraft() {
-  try {
-    return JSON.parse(localStorage.getItem(MQTT_DRAFT_KEY) || "null") as Partial<SavedMqttProfile> | null;
-  } catch {
-    return null;
-  }
-}
+// ─── Wizard Step Definitions ─────────────────────────────────────
+
+const CLIENT_STEPS: WizardStep[] = [
+  { id: "mode", label: "Mode", description: "Choose how you want to use MQTT" },
+  { id: "connection", label: "Connection", description: "Configure broker connection details" },
+  { id: "auth", label: "Security", description: "Set up authentication and encryption" },
+  { id: "advanced", label: "Advanced", description: "Configure session behavior and last will" },
+  { id: "review", label: "Review", description: "Review your settings and connect" },
+];
+
+const BROKER_STEPS: WizardStep[] = [
+  { id: "mode", label: "Mode", description: "Choose how you want to use MQTT" },
+  { id: "broker", label: "Broker", description: "Configure embedded broker settings" },
+  { id: "review", label: "Review", description: "Review your settings and start the broker" },
+];
+
+// ─── Component ───────────────────────────────────────────────────
 
 export const MqttConnectionPanel: React.FC = () => {
   const {
-    connections,
-    activeConnectionId,
-    isConnecting,
-    error,
-    connect,
-    disconnect,
-    setActiveConnection,
-    clearError,
+    connections, activeConnectionId, isConnecting, error,
+    connect, disconnect, setActiveConnection, clearError,
   } = useMqttConnectionStore();
   const { clearAll: clearSubs } = useMqttSubscriptionStore();
   const { clearAll: clearTopics } = useMqttTopicStore();
   const { clearAll: clearBroker } = useMqttBrokerStore();
   const { setActiveView } = useAppStore();
 
-  // Form state
-  const [name, setName] = useState("Local Broker");
+  // ─── View state ────────────────────────────────────────────────
+  const [showWizard, setShowWizard] = useState(false);
+  const [activeStep, setActiveStep] = useState(0);
+
+  // ─── Form state ────────────────────────────────────────────────
   const [mode, setMode] = useState<MqttMode>("client");
+  const [name, setName] = useState("My MQTT Connection");
   const [host, setHost] = useState("localhost");
   const [port, setPort] = useState("1883");
   const [clientId, setClientId] = useState("");
@@ -107,31 +110,30 @@ export const MqttConnectionPanel: React.FC = () => {
   const [password, setPassword] = useState("");
   const [keepAlive, setKeepAlive] = useState("60");
   const [cleanSession, setCleanSession] = useState(true);
-  const [useSimulator, setUseSimulator] = useState(false);
   const [useTls, setUseTls] = useState(false);
   const [caCertPath, setCaCertPath] = useState("");
   const [clientCertPath, setClientCertPath] = useState("");
   const [clientKeyPath, setClientKeyPath] = useState("");
   const [acceptInvalidCerts, setAcceptInvalidCerts] = useState(false);
-
-  // Last Will
   const [lwEnabled, setLwEnabled] = useState(false);
   const [lwTopic, setLwTopic] = useState("");
   const [lwPayload, setLwPayload] = useState("");
   const [lwQos, setLwQos] = useState<MqttQoS>("0");
   const [lwRetain, setLwRetain] = useState(false);
-
-  // Broker-specific
   const [brokerBind, setBrokerBind] = useState("0.0.0.0");
   const [brokerMaxConn, setBrokerMaxConn] = useState("100");
 
-  // Profiles
+  // ─── Profiles & confirm dialogs ────────────────────────────────
   const [profiles, setProfiles] = useState<SavedMqttProfile[]>([]);
   const [disconnectTarget, setDisconnectTarget] = useState<string | null>(null);
   const [deleteProfileTarget, setDeleteProfileTarget] = useState<string | null>(null);
 
-  // Validation
-  const validationErrors = React.useMemo(() => {
+  useEffect(() => { setProfiles(loadProfiles()); }, []);
+
+  // ─── Derived ───────────────────────────────────────────────────
+  const steps = mode === "broker" ? BROKER_STEPS : CLIENT_STEPS;
+
+  const validationErrors = useMemo(() => {
     const errors: Record<string, string> = {};
     if (!name.trim()) errors.name = "Name is required";
     if (!host.trim()) errors.host = "Host is required";
@@ -140,34 +142,73 @@ export const MqttConnectionPanel: React.FC = () => {
     return errors;
   }, [name, host, port]);
 
-  useEffect(() => {
-    setProfiles(loadProfiles());
-    const draft = loadDraft();
-    if (draft) {
-      if (draft.name) setName(draft.name);
-      if (draft.mode) setMode(draft.mode);
-      if (draft.host) setHost(draft.host);
-      if (draft.port) setPort(String(draft.port));
-      if (draft.protocol_version) setProtocolVersion(draft.protocol_version);
-      if (draft.auth_type) setAuthType(draft.auth_type);
-      if (draft.username) setUsername(draft.username);
-      if (typeof draft.use_simulator === "boolean") setUseSimulator(draft.use_simulator);
-      if (typeof draft.clean_session === "boolean") setCleanSession(draft.clean_session);
-      if (draft.keep_alive_secs) setKeepAlive(String(draft.keep_alive_secs));
-    }
-  }, []);
+  const canProceedForStep = useCallback(
+    (step: number): boolean => {
+      const stepId = steps[step]?.id;
+      if (stepId === "mode") return true; // mode is always selected
+      if (stepId === "connection") return !validationErrors.name && !validationErrors.host && !validationErrors.port;
+      if (stepId === "broker") return !validationErrors.name && !validationErrors.port;
+      if (stepId === "auth") return true;
+      if (stepId === "advanced") return true;
+      if (stepId === "review") return Object.keys(validationErrors).length === 0;
+      return true;
+    },
+    [steps, validationErrors],
+  );
 
-  // Persist draft
-  useEffect(() => {
-    localStorage.setItem(
-      MQTT_DRAFT_KEY,
-      JSON.stringify({
-        name, mode, host, port: Number(port), protocol_version: protocolVersion,
-        auth_type: authType, username, use_simulator: useSimulator,
-        clean_session: cleanSession, keep_alive_secs: Number(keepAlive) || 60,
-      })
-    );
-  }, [name, mode, host, port, protocolVersion, authType, username, useSimulator, cleanSession, keepAlive]);
+  // ─── Handlers ──────────────────────────────────────────────────
+
+  const resetForm = () => {
+    setMode("client");
+    setName("My MQTT Connection");
+    setHost("localhost");
+    setPort("1883");
+    setClientId("");
+    setProtocolVersion("v311");
+    setAuthType("anonymous");
+    setUsername("");
+    setPassword("");
+    setKeepAlive("60");
+    setCleanSession(true);
+    setUseTls(false);
+    setCaCertPath("");
+    setClientCertPath("");
+    setClientKeyPath("");
+    setAcceptInvalidCerts(false);
+    setLwEnabled(false);
+    setLwTopic("");
+    setLwPayload("");
+    setLwQos("0");
+    setLwRetain(false);
+    setBrokerBind("0.0.0.0");
+    setBrokerMaxConn("100");
+    setActiveStep(0);
+  };
+
+  const handleOpenWizard = () => {
+    resetForm();
+    clearError();
+    setShowWizard(true);
+  };
+
+  const handleCancelWizard = () => {
+    setShowWizard(false);
+    resetForm();
+  };
+
+  const handleModeChange = (newMode: MqttMode) => {
+    setMode(newMode);
+    // Reset to step 0 when mode changes since steps differ
+    setActiveStep(0);
+    // Set reasonable defaults per mode
+    if (newMode === "broker") {
+      setName("Embedded Broker");
+      setHost("0.0.0.0");
+    } else {
+      setName("My MQTT Connection");
+      setHost("localhost");
+    }
+  };
 
   const handleConnect = async () => {
     try {
@@ -195,11 +236,14 @@ export const MqttConnectionPanel: React.FC = () => {
           qos: lwQos,
           retain: lwRetain,
         } : null,
-        use_simulator: useSimulator,
         broker_bind_address: mode === "broker" ? brokerBind : null,
         broker_max_connections: mode === "broker" ? Number(brokerMaxConn) || 100 : null,
       });
-      toast.success("Connected", `${name} (${host}:${port})`);
+      toast.success(
+        mode === "broker" ? "Broker Started" : "Connected",
+        `${name} (${host}:${port})`
+      );
+      setShowWizard(false);
       setActiveView("mqtt_explorer");
     } catch (e) {
       toast.error("Connection failed", errorMessage(e) || "Unknown error");
@@ -232,7 +276,7 @@ export const MqttConnectionPanel: React.FC = () => {
       name, mode, host, port: Number(port) || 1883,
       protocol_version: protocolVersion, auth_type: authType,
       username: authType === "username_password" ? username : undefined,
-      use_simulator: useSimulator, clean_session: cleanSession,
+      clean_session: cleanSession,
       keep_alive_secs: Number(keepAlive) || 60,
     };
     const updated = [...profiles, profile];
@@ -242,16 +286,17 @@ export const MqttConnectionPanel: React.FC = () => {
   };
 
   const handleLoadProfile = (profile: SavedMqttProfile) => {
-    setName(profile.name);
     setMode(profile.mode);
+    setName(profile.name);
     setHost(profile.host);
     setPort(String(profile.port));
     setProtocolVersion(profile.protocol_version);
     setAuthType(profile.auth_type);
-    setUseSimulator(profile.use_simulator);
     setCleanSession(profile.clean_session);
     if (profile.keep_alive_secs) setKeepAlive(String(profile.keep_alive_secs));
     if (profile.username) setUsername(profile.username);
+    setActiveStep(0);
+    setShowWizard(true);
     toast.info("Profile loaded", profile.name);
   };
 
@@ -261,333 +306,412 @@ export const MqttConnectionPanel: React.FC = () => {
     saveProfiles(updated);
   };
 
-  return (
-    <div className="h-full overflow-auto p-4 flex items-center justify-center">
-      <div className="max-w-5xl w-full space-y-4">
-        {/* Hero */}
-        <div className="text-center py-6">
-          <h1 className="text-xl font-bold text-iot-text-primary">MQTT Connection</h1>
-          <p className="text-xs text-iot-text-muted mt-1">
-            Connect to an MQTT broker, start an embedded broker, or use the simulator
-          </p>
-        </div>
+  const goToStep = (stepIndex: number) => setActiveStep(stepIndex);
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* Connection form */}
-          <Card className="p-4 lg:col-span-2">
-            <h3 className="text-sm font-semibold text-iot-text-primary mb-3 flex items-center gap-2">
-              <Plus size={14} className="text-iot-cyan" />
-              New Connection
-            </h3>
-            <div className="space-y-3">
-              {/* Backend Mode Toggle */}
-              <div>
-                <label className="text-xs text-iot-text-muted font-medium mb-1.5 block">
-                  Backend Mode
-                </label>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => setUseSimulator(true)}
-                    className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border text-xs font-medium transition-all ${
-                      useSimulator
-                        ? "bg-iot-cyan/10 border-iot-cyan/40 text-iot-cyan"
-                        : "bg-iot-bg-base border-iot-border text-iot-text-muted hover:border-iot-border-light"
-                    }`}
-                  >
-                    <MonitorSmartphone size={14} />
-                    Simulator
-                  </button>
-                  <button
-                    onClick={() => { setUseSimulator(false); setMode("client"); }}
-                    className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border text-xs font-medium transition-all ${
-                      !useSimulator && mode === "client"
-                        ? "bg-iot-green/10 border-iot-green/40 text-iot-green"
-                        : "bg-iot-bg-base border-iot-border text-iot-text-muted hover:border-iot-border-light"
-                    }`}
-                  >
-                    <Radio size={14} />
-                    Client
-                  </button>
-                  <button
-                    onClick={() => { setUseSimulator(false); setMode("broker"); }}
-                    className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border text-xs font-medium transition-all ${
-                      !useSimulator && mode === "broker"
-                        ? "bg-iot-purple/10 border-iot-purple/40 text-iot-purple"
-                        : "bg-iot-bg-base border-iot-border text-iot-text-muted hover:border-iot-border-light"
-                    }`}
-                  >
-                    <Server size={14} />
-                    Broker
-                  </button>
+  // ─── Wizard Rendering ──────────────────────────────────────────
+
+  if (showWizard) {
+    return (
+      <div className="h-full overflow-hidden flex items-center justify-center p-4">
+        <div className="max-w-2xl w-full h-full max-h-[640px]">
+          <Card className="h-full flex flex-col overflow-hidden">
+            <WizardContainer
+              steps={steps}
+              activeStep={activeStep}
+              onNext={() => setActiveStep((s) => Math.min(s + 1, steps.length - 1))}
+              onBack={() => setActiveStep((s) => Math.max(s - 1, 0))}
+              onCancel={handleCancelWizard}
+              onComplete={handleConnect}
+              canProceed={canProceedForStep(activeStep)}
+              isCompleting={isConnecting}
+              completeLabel={mode === "broker" ? "Start Broker" : "Connect"}
+            >
+              {/* Step: Mode Selection */}
+              {steps[activeStep]?.id === "mode" && (
+                <div className="flex flex-col items-center gap-6 py-4">
+                  <div className="text-center">
+                    <h3 className="text-base font-semibold text-iot-text-primary">
+                      How would you like to use MQTT?
+                    </h3>
+                    <p className="text-xs text-iot-text-muted mt-1">
+                      Choose one mode — you can create separate connections for each.
+                    </p>
+                  </div>
+                  <div className="flex gap-4 w-full max-w-lg">
+                    <ModeCard
+                      icon={<Radio size={24} />}
+                      title="Client"
+                      description="Connect to an external MQTT broker to publish and subscribe to messages"
+                      selected={mode === "client"}
+                      onClick={() => handleModeChange("client")}
+                    />
+                    <ModeCard
+                      icon={<Server size={24} />}
+                      title="Broker"
+                      description="Start an embedded MQTT broker that other clients can connect to"
+                      selected={mode === "broker"}
+                      onClick={() => handleModeChange("broker")}
+                    />
+                  </div>
                 </div>
-              </div>
+              )}
 
-              <Input
-                label="Connection Name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="My MQTT Broker"
-                error={name.trim() === "" ? validationErrors.name : undefined}
-              />
-
-              <div className="grid grid-cols-3 gap-3">
-                <div className="col-span-2">
+              {/* Step: Connection Details (Client) */}
+              {steps[activeStep]?.id === "connection" && (
+                <div className="space-y-4 max-w-md mx-auto">
                   <Input
-                    label="Host"
-                    value={host}
-                    onChange={(e) => setHost(e.target.value)}
-                    placeholder="localhost"
-                    className="font-mono text-xs"
-                    error={host.trim() === "" ? validationErrors.host : undefined}
+                    label="Connection Name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="My MQTT Connection"
+                    error={name.trim() === "" ? validationErrors.name : undefined}
                   />
-                </div>
-                <Input
-                  label="Port"
-                  type="number"
-                  value={port}
-                  onChange={(e) => setPort(e.target.value)}
-                  placeholder="1883"
-                  error={validationErrors.port}
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <Select
-                  label="Protocol Version"
-                  options={PROTOCOL_VERSIONS}
-                  value={protocolVersion}
-                  onChange={(e) => setProtocolVersion(e.target.value as MqttProtocolVersion)}
-                />
-                <Input
-                  label="Client ID (optional)"
-                  value={clientId}
-                  onChange={(e) => setClientId(e.target.value)}
-                  placeholder="Auto-generated"
-                  className="font-mono text-xs"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <Input
-                  label="Keep Alive (seconds)"
-                  type="number"
-                  value={keepAlive}
-                  onChange={(e) => setKeepAlive(e.target.value)}
-                  min="5"
-                  max="65535"
-                />
-                <div className="flex items-end pb-0.5">
-                  <Checkbox
-                    checked={cleanSession}
-                    onChange={setCleanSession}
-                    label="Clean Session"
-                  />
-                </div>
-              </div>
-
-              {/* Auth */}
-              <Select
-                label="Authentication"
-                options={AUTH_TYPES}
-                value={authType}
-                onChange={(e) => setAuthType(e.target.value as MqttAuthType)}
-              />
-              {authType === "username_password" && (
-                <div className="grid grid-cols-2 gap-3">
-                  <Input label="Username" value={username} onChange={(e) => setUsername(e.target.value)} />
-                  <Input label="Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
-                </div>
-              )}
-
-              {/* TLS */}
-              <div className="flex items-center gap-2">
-                <Checkbox
-                  checked={useTls}
-                  onChange={setUseTls}
-                  label="Enable TLS/SSL"
-                />
-                <Shield size={12} className="text-iot-text-secondary" />
-              </div>
-              {useTls && (
-                <div className="space-y-2 pl-4 border-l-2 border-iot-border">
-                  <Input label="CA Certificate Path" value={caCertPath} onChange={(e) => setCaCertPath(e.target.value)} placeholder="/path/to/ca.pem" className="font-mono text-xs" />
-                  <Input label="Client Certificate Path" value={clientCertPath} onChange={(e) => setClientCertPath(e.target.value)} placeholder="/path/to/client.pem" className="font-mono text-xs" />
-                  <Input label="Client Key Path" value={clientKeyPath} onChange={(e) => setClientKeyPath(e.target.value)} placeholder="/path/to/client.key" className="font-mono text-xs" />
-                  <Checkbox
-                    checked={acceptInvalidCerts}
-                    onChange={setAcceptInvalidCerts}
-                    label="Accept invalid certificates (insecure)"
-                  />
-                </div>
-              )}
-
-              {/* Last Will */}
-              <div className="flex items-center gap-2">
-                <Checkbox
-                  checked={lwEnabled}
-                  onChange={setLwEnabled}
-                  label="Last Will & Testament"
-                />
-              </div>
-              {lwEnabled && (
-                <div className="space-y-2 pl-4 border-l-2 border-iot-border">
-                  <Input label="Topic" value={lwTopic} onChange={(e) => setLwTopic(e.target.value)} placeholder="device/status" />
-                  <Input label="Payload" value={lwPayload} onChange={(e) => setLwPayload(e.target.value)} placeholder="offline" />
-                  <div className="grid grid-cols-2 gap-3">
-                    <Select label="QoS" options={QOS_OPTIONS} value={lwQos} onChange={(e) => setLwQos(e.target.value as MqttQoS)} />
-                    <div className="flex items-end pb-0.5">
-                      <Checkbox
-                        checked={lwRetain}
-                        onChange={setLwRetain}
-                        label="Retain"
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="col-span-2">
+                      <Input
+                        label="Broker Host"
+                        value={host}
+                        onChange={(e) => setHost(e.target.value)}
+                        placeholder="localhost"
+                        className="font-mono text-xs"
+                        error={host.trim() === "" ? validationErrors.host : undefined}
                       />
                     </div>
+                    <Input
+                      label="Port"
+                      type="number"
+                      value={port}
+                      onChange={(e) => setPort(e.target.value)}
+                      placeholder="1883"
+                      error={validationErrors.port}
+                    />
                   </div>
-                </div>
-              )}
-
-              {/* Broker-specific */}
-              {mode === "broker" && !useSimulator && (
-                <div className="space-y-2 p-3 rounded-lg bg-iot-bg-base border border-iot-border">
-                  <span className="text-xs text-iot-text-muted font-medium">Broker Settings</span>
                   <div className="grid grid-cols-2 gap-3">
-                    <Input label="Bind Address" value={brokerBind} onChange={(e) => setBrokerBind(e.target.value)} placeholder="0.0.0.0" className="font-mono text-xs" />
-                    <Input label="Max Connections" type="number" value={brokerMaxConn} onChange={(e) => setBrokerMaxConn(e.target.value)} />
+                    <Select
+                      label="Protocol Version"
+                      options={PROTOCOL_VERSIONS}
+                      value={protocolVersion}
+                      onChange={(e) => setProtocolVersion(e.target.value as MqttProtocolVersion)}
+                    />
+                    <Input
+                      label="Client ID (optional)"
+                      value={clientId}
+                      onChange={(e) => setClientId(e.target.value)}
+                      placeholder="Auto-generated"
+                      className="font-mono text-xs"
+                    />
                   </div>
                 </div>
               )}
 
-              {error && (
-                <div className="flex items-center gap-2 p-2 rounded bg-iot-red/10 border border-iot-red/20">
-                  <AlertCircle size={14} className="text-iot-red flex-shrink-0" />
-                  <span className="text-xs text-iot-red flex-1">{error}</span>
-                  <button onClick={clearError} className="text-iot-red hover:text-iot-red/80">
-                    <span className="text-xs">&times;</span>
-                  </button>
+              {/* Step: Authentication & Security (Client) */}
+              {steps[activeStep]?.id === "auth" && (
+                <div className="space-y-4 max-w-md mx-auto">
+                  <Select
+                    label="Authentication"
+                    options={AUTH_TYPES}
+                    value={authType}
+                    onChange={(e) => setAuthType(e.target.value as MqttAuthType)}
+                  />
+                  {authType === "username_password" && (
+                    <div className="grid grid-cols-2 gap-3">
+                      <Input label="Username" value={username} onChange={(e) => setUsername(e.target.value)} />
+                      <Input label="Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+                    </div>
+                  )}
+
+                  <div className="pt-2 border-t border-iot-border">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Checkbox checked={useTls} onChange={setUseTls} label="Enable TLS/SSL" />
+                      <Shield size={12} className="text-iot-text-secondary" />
+                    </div>
+                    {useTls && (
+                      <div className="space-y-3 pl-4 border-l-2 border-iot-border">
+                        <Input label="CA Certificate Path" value={caCertPath} onChange={(e) => setCaCertPath(e.target.value)} placeholder="/path/to/ca.pem" className="font-mono text-xs" />
+                        <Input label="Client Certificate Path" value={clientCertPath} onChange={(e) => setClientCertPath(e.target.value)} placeholder="/path/to/client.pem" className="font-mono text-xs" />
+                        <Input label="Client Key Path" value={clientKeyPath} onChange={(e) => setClientKeyPath(e.target.value)} placeholder="/path/to/client.key" className="font-mono text-xs" />
+                        <Checkbox checked={acceptInvalidCerts} onChange={setAcceptInvalidCerts} label="Accept invalid certificates (insecure)" />
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
-              <div className="flex gap-2">
-                <Button variant="primary" size="md" onClick={handleConnect} loading={isConnecting} className="flex-1" disabled={Object.keys(validationErrors).length > 0}>
-                  <Zap size={14} />
-                  Connect
-                </Button>
-                <Tooltip content="Save as profile">
-                  <Button variant="secondary" size="md" onClick={handleSaveProfile}>
-                    <Save size={14} />
-                  </Button>
-                </Tooltip>
-              </div>
-            </div>
-          </Card>
+              {/* Step: Advanced Settings (Client) */}
+              {steps[activeStep]?.id === "advanced" && (
+                <div className="space-y-4 max-w-md mx-auto">
+                  <div className="grid grid-cols-2 gap-3">
+                    <Input
+                      label="Keep Alive (seconds)"
+                      type="number"
+                      value={keepAlive}
+                      onChange={(e) => setKeepAlive(e.target.value)}
+                      min="5"
+                      max="65535"
+                    />
+                    <div className="flex items-end pb-0.5">
+                      <Checkbox checked={cleanSession} onChange={setCleanSession} label="Clean Session" />
+                    </div>
+                  </div>
 
-          {/* Right column */}
-          <div className="space-y-4">
-            {/* Saved Profiles */}
-            <Card className="p-4">
-              <h3 className="text-sm font-semibold text-iot-text-primary mb-3 flex items-center gap-2">
-                <BookOpen size={14} className="text-iot-cyan" />
-                Saved Profiles
-                {profiles.length > 0 && <Badge>{profiles.length}</Badge>}
-              </h3>
-              {profiles.length === 0 ? (
-                <p className="text-xs text-iot-text-muted text-center py-4">No saved profiles yet</p>
-              ) : (
-                <div className="space-y-1.5 max-h-40 overflow-auto">
-                  {profiles.map((profile) => (
-                    <div
-                      key={profile.id}
-                      className="flex items-center gap-2 p-2 rounded bg-iot-bg-base border border-iot-border hover:border-iot-border-light transition-colors cursor-pointer group"
-                      onClick={() => handleLoadProfile(profile)}
-                    >
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs font-medium text-iot-text-primary truncate">{profile.name}</p>
-                        <p className="text-2xs font-mono text-iot-text-disabled truncate">
-                          {profile.host}:{profile.port} ({profile.mode})
-                        </p>
+                  <div className="pt-2 border-t border-iot-border">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Checkbox checked={lwEnabled} onChange={setLwEnabled} label="Last Will & Testament" />
+                    </div>
+                    {lwEnabled && (
+                      <div className="space-y-3 pl-4 border-l-2 border-iot-border">
+                        <Input label="Topic" value={lwTopic} onChange={(e) => setLwTopic(e.target.value)} placeholder="device/status" />
+                        <Input label="Payload" value={lwPayload} onChange={(e) => setLwPayload(e.target.value)} placeholder="offline" />
+                        <div className="grid grid-cols-2 gap-3">
+                          <Select label="QoS" options={QOS_OPTIONS} value={lwQos} onChange={(e) => setLwQos(e.target.value as MqttQoS)} />
+                          <div className="flex items-end pb-0.5">
+                            <Checkbox checked={lwRetain} onChange={setLwRetain} label="Retain" />
+                          </div>
+                        </div>
                       </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Step: Broker Settings */}
+              {steps[activeStep]?.id === "broker" && (
+                <div className="space-y-4 max-w-md mx-auto">
+                  <Input
+                    label="Broker Name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="Embedded Broker"
+                    error={name.trim() === "" ? validationErrors.name : undefined}
+                  />
+                  <div className="grid grid-cols-2 gap-3">
+                    <Input
+                      label="Bind Address"
+                      value={brokerBind}
+                      onChange={(e) => setBrokerBind(e.target.value)}
+                      placeholder="0.0.0.0"
+                      className="font-mono text-xs"
+                    />
+                    <Input
+                      label="Port"
+                      type="number"
+                      value={port}
+                      onChange={(e) => setPort(e.target.value)}
+                      placeholder="1883"
+                      error={validationErrors.port}
+                    />
+                  </div>
+                  <Input
+                    label="Max Connections"
+                    type="number"
+                    value={brokerMaxConn}
+                    onChange={(e) => setBrokerMaxConn(e.target.value)}
+                    placeholder="100"
+                  />
+                  <div className="p-3 rounded-lg bg-iot-bg-base border border-iot-border">
+                    <p className="text-xs text-iot-text-muted leading-relaxed">
+                      The embedded broker will listen on <span className="font-mono text-iot-text-secondary">{brokerBind}:{port}</span> for
+                      incoming MQTT client connections. External clients can publish and subscribe through this broker.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Step: Review */}
+              {steps[activeStep]?.id === "review" && (
+                <div className="space-y-4 max-w-md mx-auto">
+                  {mode === "client" ? (
+                    <>
+                      <ReviewSection title="Connection" icon={<Wifi size={12} />} onEdit={() => goToStep(1)}>
+                        <ReviewRow label="Name" value={name} />
+                        <ReviewRow label="Host" value={`${host}:${port}`} />
+                        <ReviewRow label="Protocol" value={protocolVersion === "v5" ? "MQTT 5.0" : "MQTT 3.1.1"} />
+                        {clientId && <ReviewRow label="Client ID" value={clientId} />}
+                      </ReviewSection>
+                      <ReviewSection title="Security" icon={<Lock size={12} />} onEdit={() => goToStep(2)}>
+                        <ReviewRow label="Authentication" value={authType === "anonymous" ? "Anonymous" : authType === "username_password" ? `Username (${username})` : "Certificate"} />
+                        <ReviewRow label="TLS" value={useTls ? "Enabled" : "Disabled"} />
+                      </ReviewSection>
+                      <ReviewSection title="Advanced" icon={<Settings2 size={12} />} onEdit={() => goToStep(3)}>
+                        <ReviewRow label="Keep Alive" value={`${keepAlive}s`} />
+                        <ReviewRow label="Clean Session" value={cleanSession ? "Yes" : "No"} />
+                        <ReviewRow label="Last Will" value={lwEnabled ? lwTopic : "Disabled"} />
+                      </ReviewSection>
+                    </>
+                  ) : (
+                    <ReviewSection title="Broker Configuration" icon={<Server size={12} />} onEdit={() => goToStep(1)}>
+                      <ReviewRow label="Name" value={name} />
+                      <ReviewRow label="Bind Address" value={`${brokerBind}:${port}`} />
+                      <ReviewRow label="Max Connections" value={brokerMaxConn} />
+                    </ReviewSection>
+                  )}
+
+                  {error && (
+                    <div className="flex items-center gap-2 p-3 rounded-lg bg-iot-red/10 border border-iot-red/20">
+                      <AlertCircle size={14} className="text-iot-red flex-shrink-0" />
+                      <span className="text-xs text-iot-red flex-1">{error}</span>
+                      <button onClick={clearError} className="text-iot-red hover:text-iot-red/80">
+                        <span className="text-xs">&times;</span>
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="flex justify-end">
+                    <Tooltip content="Save current settings as a reusable profile">
+                      <Button variant="ghost" size="sm" onClick={handleSaveProfile}>
+                        <Save size={14} />
+                        Save as Profile
+                      </Button>
+                    </Tooltip>
+                  </div>
+                </div>
+              )}
+            </WizardContainer>
+          </Card>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Landing Page ──────────────────────────────────────────────
+
+  return (
+    <div className="h-full overflow-auto p-4 flex items-center justify-center">
+      <div className="max-w-3xl w-full space-y-6">
+        {/* Hero */}
+        <div className="text-center py-8">
+          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-iot-cyan/10 border border-iot-cyan/20 mb-4">
+            <Radio size={28} className="text-iot-cyan" />
+          </div>
+          <h1 className="text-xl font-bold text-iot-text-primary">MQTT Connections</h1>
+          <p className="text-xs text-iot-text-muted mt-1.5 max-w-sm mx-auto">
+            Connect to an external broker or start an embedded broker
+          </p>
+          <Button variant="primary" size="md" onClick={handleOpenWizard} className="mt-5">
+            <Plus size={14} />
+            New Connection
+          </Button>
+        </div>
+
+        {/* Active Connections */}
+        <div>
+          <h3 className="text-sm font-semibold text-iot-text-primary mb-3 flex items-center gap-2">
+            <Wifi size={14} className="text-iot-cyan" />
+            Active Connections
+            {connections.length > 0 && <Badge variant="success">{connections.length}</Badge>}
+          </h3>
+          {connections.length === 0 ? (
+            <Card className="p-8">
+              <EmptyState
+                icon={<Server size={28} />}
+                title="No Active Connections"
+                description="Create a new connection to get started with MQTT"
+              />
+            </Card>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {connections.map((conn) => (
+                <Card
+                  key={conn.id}
+                  interactive
+                  className={`p-4 cursor-pointer transition-all ${
+                    conn.id === activeConnectionId
+                      ? "ring-1 ring-iot-cyan/30 bg-iot-cyan/5"
+                      : ""
+                  }`}
+                >
+                  <div onClick={() => handleSelectConnection(conn.id)}>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <StatusDot
+                          status={
+                            conn.status === "connected" ? "connected"
+                            : conn.status === "error" ? "error"
+                            : "warning"
+                          }
+                        />
+                        <span className="text-sm font-medium text-iot-text-primary truncate">{conn.name}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        <Badge variant={conn.status === "connected" ? "success" : conn.status === "error" ? "danger" : "warning"}>
+                          {conn.status}
+                        </Badge>
+                        <Badge variant={conn.mode === "broker" ? "default" : "success"}>
+                          {conn.mode.toUpperCase()}
+                        </Badge>
+                      </div>
+                    </div>
+                    <p className="text-2xs font-mono text-iot-text-muted truncate">
+                      {conn.host}:{conn.port}
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-between mt-3 pt-2 border-t border-iot-border">
+                    <button
+                      onClick={() => handleSelectConnection(conn.id)}
+                      className="text-2xs text-iot-cyan hover:text-iot-cyan/80 transition-colors flex items-center gap-1"
+                    >
+                      Open <ChevronRight size={10} />
+                    </button>
+                    <Tooltip content="Disconnect">
                       <button
-                        onClick={(e) => { e.stopPropagation(); setDeleteProfileTarget(profile.id); }}
-                        className="text-iot-text-disabled hover:text-iot-red transition-colors opacity-0 group-hover:opacity-100 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iot-border-focus"
+                        onClick={(e) => { e.stopPropagation(); setDisconnectTarget(conn.id); }}
+                        className="text-iot-text-disabled hover:text-iot-red transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iot-border-focus"
                       >
                         <Trash2 size={12} />
                       </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </Card>
-
-            {/* Active connections */}
-            <Card className="p-4">
-              <h3 className="text-sm font-semibold text-iot-text-primary mb-3 flex items-center gap-2">
-                <Wifi size={14} className="text-iot-cyan" />
-                Active Connections
-                {connections.length > 0 && <Badge variant="success">{connections.length}</Badge>}
-              </h3>
-              {connections.length === 0 ? (
-                <EmptyState icon={<Server size={24} />} title="No Connections" description="Connect to get started" />
-              ) : (
-                <div className="space-y-2">
-                  {connections.map((conn) => (
-                    <div
-                      key={conn.id}
-                      className={`p-3 rounded-lg border transition-all cursor-pointer ${
-                        conn.id === activeConnectionId
-                          ? "bg-iot-cyan/5 border-iot-cyan/30 glow-cyan"
-                          : "bg-iot-bg-base border-iot-border hover:border-iot-border-light"
-                      }`}
-                      onClick={() => handleSelectConnection(conn.id)}
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <StatusDot
-                            status={
-                              conn.status === "connected" ? "connected"
-                              : conn.status === "error" ? "error"
-                              : "warning"
-                            }
-                          />
-                          <div className="min-w-0">
-                            <p className="text-xs font-medium text-iot-text-primary truncate">{conn.name}</p>
-                            <p className="text-2xs font-mono text-iot-text-muted truncate">
-                              {conn.host}:{conn.port} ({conn.mode})
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1.5 flex-shrink-0">
-                          <Badge variant={conn.status === "connected" ? "success" : conn.status === "error" ? "danger" : "warning"}>
-                            {conn.status}
-                          </Badge>
-                          <Badge variant={conn.is_simulator ? "info" : conn.mode === "broker" ? "default" : "success"}>
-                            {conn.is_simulator ? "SIM" : conn.mode === "broker" ? "BROKER" : "LIVE"}
-                          </Badge>
-                          <Tooltip content="Disconnect">
-                            <button
-                              onClick={(e) => { e.stopPropagation(); setDisconnectTarget(conn.id); }}
-                              className="text-iot-text-disabled hover:text-iot-red transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iot-border-focus"
-                            >
-                              <Trash2 size={12} />
-                            </button>
-                          </Tooltip>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </Card>
-          </div>
+                    </Tooltip>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
         </div>
+
+        {/* Saved Profiles */}
+        {profiles.length > 0 && (
+          <div>
+            <h3 className="text-sm font-semibold text-iot-text-primary mb-3 flex items-center gap-2">
+              <BookOpen size={14} className="text-iot-cyan" />
+              Saved Profiles
+              <Badge>{profiles.length}</Badge>
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+              {profiles.map((profile) => (
+                <div
+                  key={profile.id}
+                  className="flex items-center gap-3 p-3 rounded-lg bg-iot-bg-surface border border-iot-border hover:border-iot-border-light transition-colors cursor-pointer group"
+                  onClick={() => handleLoadProfile(profile)}
+                >
+                  <div className="w-8 h-8 rounded-lg bg-iot-bg-base flex items-center justify-center flex-shrink-0">
+                    {profile.mode === "broker" ? <Server size={14} className="text-iot-text-muted" /> : <Radio size={14} className="text-iot-text-muted" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium text-iot-text-primary truncate">{profile.name}</p>
+                    <p className="text-2xs font-mono text-iot-text-disabled truncate">
+                      {profile.host}:{profile.port} &middot; {profile.mode}
+                    </p>
+                  </div>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setDeleteProfileTarget(profile.id); }}
+                    className="text-iot-text-disabled hover:text-iot-red transition-colors opacity-0 group-hover:opacity-100 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iot-border-focus"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
+      {/* Confirm Dialogs */}
       <ConfirmDialog
         open={!!disconnectTarget}
         onClose={() => setDisconnectTarget(null)}
         onConfirm={() => disconnectTarget && handleDisconnect(disconnectTarget)}
         title="Disconnect"
         message={`Are you sure you want to disconnect from "${
-          connections.find((c) => c.id === disconnectTarget)?.name || "this broker"
+          connections.find((c) => c.id === disconnectTarget)?.name || "this connection"
         }"? Active subscriptions will be lost.`}
         confirmLabel="Disconnect"
         danger

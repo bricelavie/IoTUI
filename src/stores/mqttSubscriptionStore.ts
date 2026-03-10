@@ -57,7 +57,8 @@ export const useMqttSubscriptionStore = create<MqttSubscriptionStore>((set, get)
       topic_filter: topicFilter,
       qos: qos ?? (String(getSetting("mqttDefaultQoS")) as MqttQoS),
     };
-    const subId = await mqtt.mqttSubscribe(connectionId, request);
+    const result = await mqtt.mqttSubscribe(connectionId, request);
+    const subId = result.id;
     const subs = await mqtt.mqttGetSubscriptions(connectionId);
     set({ subscriptions: subs });
     log("info", "subscription", "mqtt_subscribe", `Subscribed to "${topicFilter}" (id=${subId})`);
@@ -94,6 +95,8 @@ export const useMqttSubscriptionStore = create<MqttSubscriptionStore>((set, get)
 
     const interval = getSetting("mqttPollInterval");
     const maxMessages = getSetting("mqttMaxStreamMessages");
+    const MAX_BACKOFF = 10000; // 10 seconds max backoff
+    let consecutiveErrors = 0;
 
     const schedule = (delay: number) => {
       controller.timerId = setTimeout(runPoll, delay);
@@ -110,6 +113,7 @@ export const useMqttSubscriptionStore = create<MqttSubscriptionStore>((set, get)
         const response: MqttPollResponse = await mqtt.mqttPollMessages(controller.connectionId);
         controller.lastError = null;
         controller.lastSuccessAt = Date.now();
+        consecutiveErrors = 0;
 
         if (response.messages.length > 0) {
           const { messages: existing } = get();
@@ -124,12 +128,17 @@ export const useMqttSubscriptionStore = create<MqttSubscriptionStore>((set, get)
       } catch (e) {
         const message = errorMessage(e);
         controller.lastError = message;
+        consecutiveErrors += 1;
         set({ pollError: message });
         log("warn", "subscription", "mqtt_poll", `Poll failed: ${message}`);
       } finally {
         controller.inFlight = false;
         if (get().isPolling) {
-          schedule(interval);
+          // Exponential backoff on consecutive errors, capped at MAX_BACKOFF
+          const delay = consecutiveErrors > 0
+            ? Math.min(interval * Math.pow(2, consecutiveErrors - 1), MAX_BACKOFF)
+            : interval;
+          schedule(delay);
         }
       }
     };

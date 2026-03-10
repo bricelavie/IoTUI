@@ -117,6 +117,8 @@ export interface HistoryReadRequest {
   start_time?: string;
   end_time?: string;
   max_values?: number;
+  /** Hex-encoded continuation point from a previous read, for pagination. */
+  continuation_point?: string;
 }
 
 export interface HistoryValue {

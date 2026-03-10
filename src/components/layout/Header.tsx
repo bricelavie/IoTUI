@@ -83,8 +83,8 @@ export const Header: React.FC = () => {
                 <Badge variant={activeConnection.status === "connected" ? "success" : activeConnection.status === "error" ? "danger" : "warning"}>
                   {activeConnection.status}
                 </Badge>
-                <Badge variant={activeConnection.is_simulator ? "info" : activeConnection.mode === "broker" ? "default" : "success"}>
-                  {activeConnection.is_simulator ? "SIM" : activeConnection.mode.toUpperCase()}
+                <Badge variant={activeConnection.mode === "broker" ? "default" : "success"}>
+                  {activeConnection.mode.toUpperCase()}
                 </Badge>
                 {activeSubStatus && (
                   <span className="flex items-center gap-1 text-2xs text-iot-cyan">

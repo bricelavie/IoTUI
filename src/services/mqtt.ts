@@ -47,7 +47,7 @@ export const mqttGetConnectionStatus = withLogging(
 
 export const mqttSubscribe = withLogging(
   "mqtt_subscribe",
-  async (connectionId: string, request: MqttSubscribeRequest): Promise<number> => {
+  async (connectionId: string, request: MqttSubscribeRequest): Promise<MqttSubscriptionInfo> => {
     return invoke("mqtt_subscribe", { connectionId, request });
   }
 );

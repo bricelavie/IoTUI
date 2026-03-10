@@ -17,11 +17,11 @@ use opcua::crypto::SecurityPolicy;
 use opcua::types::argument::Argument;
 use opcua::types::{
     AttributeId, BrowseDescription, BrowseDirection, BrowseResultMask, ContentFilter, DataValue,
-    EventFilter, ExtensionObject, HistoryData, HistoryReadValueId, MessageSecurityMode,
+    EventFilter, ExtensionObject, Guid, HistoryData, HistoryReadValueId, MessageSecurityMode,
     MonitoredItemCreateRequest as OpcMonitoredItemCreateRequest, MonitoringMode,
     MonitoringParameters, NodeClassMask, NodeId, NumericRange, ObjectId, ObjectTypeId,
     QualifiedName, ReadRawModifiedDetails, ReadValueId, ReferenceTypeId, SimpleAttributeOperand,
-    StatusCode, TimestampsToReturn, UserTokenPolicy, Variant, WriteValue,
+    StatusCode, TimestampsToReturn, Variant, WriteValue,
 };
 
 use crate::error::{AppError, AppResult};
@@ -77,6 +77,8 @@ pub struct OpcUaConnection {
     subscription_intervals: HashMap<u32, f64>,
     /// Event buffer: bounded ring buffer filled by EventCallback, drained by poll_events
     event_buffer: Arc<SyncMutex<VecDeque<EventData>>>,
+    /// Server-side subscription ID used for the auto-subscribed event subscription, if any.
+    event_subscription_id: Option<u32>,
     /// Indicates whether a connection is currently usable.
     connected: Arc<AtomicBool>,
     reconnecting: Arc<AtomicBool>,
@@ -306,32 +308,12 @@ impl OpcUaConnection {
             }
         };
 
-        // Determine user token policy based on auth type
-        let user_token_policy = match config.auth_type {
-            AuthType::Anonymous => UserTokenPolicy::anonymous(),
-            AuthType::UsernamePassword => UserTokenPolicy {
-                policy_id: opcua::types::UAString::from("username_basic256sha256"),
-                token_type: opcua::types::UserTokenType::UserName,
-                issued_token_type: opcua::types::UAString::null(),
-                issuer_endpoint_url: opcua::types::UAString::null(),
-                security_policy_uri: opcua::types::UAString::null(),
-            },
-            // Certificate auth returns early above; this branch is a defensive fallback
-            // in case someone refactors the early return.
-            AuthType::Certificate => {
-                return Err(AppError::security(
-                    "Certificate authentication is not yet supported.",
-                ));
-            }
-        };
-
         let (session, event_loop) = client
             .connect_to_matching_endpoint(
                 (
                     config.endpoint_url.as_str(),
                     security_policy.to_str(),
                     message_security_mode,
-                    user_token_policy,
                 ),
                 identity,
             )
@@ -394,13 +376,14 @@ impl OpcUaConnection {
             config.endpoint_url
         );
 
-        let conn = Self {
+        let mut conn = Self {
             session,
             event_loop_handle,
             data_buffers: data_buffers_runtime,
             monitored_items: HashMap::new(),
             subscription_intervals: HashMap::new(),
             event_buffer: Arc::new(SyncMutex::new(VecDeque::new())),
+            event_subscription_id: None,
             connected: connected_flag,
             reconnecting: reconnecting_flag,
             subscription_bindings,
@@ -410,7 +393,10 @@ impl OpcUaConnection {
 
         // Auto-subscribe to events (best-effort; don't fail the connection if this fails)
         match conn.subscribe_to_events().await {
-            Ok(()) => info!("Auto-subscribed to server events"),
+            Ok(id) => {
+                info!("Auto-subscribed to server events (sub_id={})", id);
+                conn.event_subscription_id = Some(id);
+            }
             Err(e) => log::warn!("Failed to auto-subscribe to events (server may not support events): {e}"),
         }
 
@@ -420,6 +406,12 @@ impl OpcUaConnection {
     /// Disconnect from the server
     pub async fn disconnect(&self) -> AppResult<()> {
         info!("Disconnecting from OPC UA server");
+        // Best-effort cleanup of event subscription
+        if let Some(sub_id) = self.event_subscription_id {
+            if let Err(e) = self.session.delete_subscription(sub_id).await {
+                debug!("Failed to delete event subscription {sub_id} during disconnect: {e}");
+            }
+        }
         self.session
             .disconnect()
             .await
@@ -523,8 +515,6 @@ impl OpcUaConnection {
                             r.node_class,
                             opcua::types::NodeClass::Object
                                 | opcua::types::NodeClass::View
-                                | opcua::types::NodeClass::Variable
-                                | opcua::types::NodeClass::Method
                         );
 
                         BrowseNode {
@@ -685,7 +675,7 @@ impl OpcUaConnection {
                 attributes.push(NodeAttribute {
                     name: attr_name,
                     value: attr_value,
-                    data_type: Some("String".to_string()),
+                    data_type: dv.value.as_ref().map(variant_type_name),
                     status: attr_status,
                 });
             }
@@ -855,11 +845,25 @@ impl OpcUaConnection {
             return_bounds: true,
         };
 
+        let continuation_point = request
+            .continuation_point
+            .as_deref()
+            .map(|hex| {
+                (0..hex.len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(hex.get(i..i + 2).unwrap_or(""), 16))
+                    .collect::<Result<Vec<u8>, _>>()
+            })
+            .transpose()
+            .map_err(|_| AppError::invalid_argument("Invalid continuation point hex string"))?
+            .map(opcua::types::ByteString::from)
+            .unwrap_or_default();
+
         let nodes_to_read = [HistoryReadValueId {
             node_id,
             index_range: NumericRange::None,
             data_encoding: QualifiedName::null(),
-            continuation_point: Default::default(),
+            continuation_point,
         }];
 
         let result = self
@@ -1320,7 +1324,7 @@ impl OpcUaConnection {
 
     /// Subscribe to OPC UA events on the Server object.
     /// Creates a subscription with an EventCallback that monitors the Server node's EventNotifier attribute.
-    pub async fn subscribe_to_events(&self) -> AppResult<()> {
+    pub async fn subscribe_to_events(&self) -> AppResult<u32> {
         let event_buf = self.event_buffer.clone();
 
         // Build select clauses for BaseEventType fields
@@ -1491,7 +1495,7 @@ impl OpcUaConnection {
             }
         }
 
-        Ok(())
+        Ok(sub_id)
     }
 
     /// Drain buffered events received from the server via EventCallback
@@ -1627,6 +1631,37 @@ fn string_to_variant(value: &str, data_type: &str) -> AppResult<Variant> {
             .parse()
             .map(Variant::Double)
             .map_err(|_| parse_err(data_type, value)),
+        "String" | "string" => Ok(Variant::String(opcua::types::UAString::from(value))),
+        "DateTime" | "datetime" | "UtcTime" => {
+            let dt = chrono::DateTime::parse_from_rfc3339(value)
+                .map_err(|_| parse_err(data_type, value))?;
+            Ok(Variant::DateTime(Box::new(dt.with_timezone(&chrono::Utc).into())))
+        }
+        "Guid" | "guid" => {
+            let guid = Guid::from_str(value)
+                .map_err(|_| parse_err(data_type, value))?;
+            Ok(Variant::Guid(Box::new(guid)))
+        }
+        "NodeId" | "nodeid" => {
+            let nid = NodeId::from_str(value)
+                .map_err(|_| parse_err(data_type, value))?;
+            Ok(Variant::NodeId(Box::new(nid)))
+        }
+        "ByteString" | "bytestring" => {
+            // Accept hex-encoded byte strings (e.g. "48656c6c6f")
+            let bytes = (0..value.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(value.get(i..i + 2).unwrap_or(""), 16))
+                .collect::<Result<Vec<u8>, _>>()
+                .map_err(|_| parse_err(data_type, value))?;
+            Ok(Variant::ByteString(opcua::types::ByteString::from(bytes)))
+        }
+        "StatusCode" | "statuscode" => {
+            let code = value
+                .parse::<u32>()
+                .map_err(|_| parse_err(data_type, value))?;
+            Ok(Variant::StatusCode(StatusCode::from(code)))
+        }
         _ => Ok(Variant::String(opcua::types::UAString::from(value))),
     }
 }

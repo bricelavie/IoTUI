@@ -162,6 +162,8 @@ pub struct HistoryReadRequest {
     pub start_time: Option<String>,
     pub end_time: Option<String>,
     pub max_values: Option<u32>,
+    /// Hex-encoded continuation point from a previous read, for pagination.
+    pub continuation_point: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

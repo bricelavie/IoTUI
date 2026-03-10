@@ -82,7 +82,7 @@ export const PublishDrawer: React.FC<{
   const [history, setHistory] = useState<PublishHistoryEntry[]>(loadHistory);
   const [templateName, setTemplateName] = useState("");
 
-  const isBrokerMode = activeConnection?.mode === "broker" && !activeConnection?.is_simulator;
+  const isBrokerMode = activeConnection?.mode === "broker";
 
   // Use selected topic if topic field is empty
   const effectiveTopic = topic || selectedTopic || "";

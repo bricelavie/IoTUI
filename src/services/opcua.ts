@@ -78,6 +78,8 @@ export const readNodeDetails = withLogging(
 
 // ─── Read / Write ────────────────────────────────────────────────
 
+/** Batch-read current values for multiple nodes. Currently unused in the UI but
+ *  available for custom dashboards or future batch-refresh features. */
 export const readValues = withLogging(
   "opcua_read_values",
   async (connectionId: string, nodeIds: string[]): Promise<ReadResult[]> => {

@@ -49,7 +49,7 @@ export const StatusBar: React.FC = () => {
   if (activeProtocol === "mqtt") {
     const activeConn = mqttConnections.find((c) => c.id === mqttActiveConnectionId);
     const backendType = activeConn
-      ? activeConn.is_simulator ? "Simulator" : activeConn.mode === "broker" ? "Broker" : "Live"
+      ? activeConn.mode === "broker" ? "Broker" : "Client"
       : "—";
 
     return (
@@ -90,13 +90,11 @@ export const StatusBar: React.FC = () => {
           </span>
           <span className={`flex items-center gap-1 ${
             activeConn
-              ? activeConn.is_simulator ? "text-iot-text-disabled" : "text-iot-green"
+              ? "text-iot-green"
               : ""
           }`}>
             {backendType !== "—" && (
-              <span className={`w-1.5 h-1.5 rounded-full ${
-                activeConn?.is_simulator ? "bg-iot-text-disabled" : "bg-iot-green"
-              }`} />
+              <span className={`w-1.5 h-1.5 rounded-full bg-iot-green`} />
             )}
             {backendType}
           </span>

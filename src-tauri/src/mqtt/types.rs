@@ -79,9 +79,6 @@ pub struct MqttConnectionConfig {
     pub clean_session: bool,
     pub tls: Option<MqttTlsConfig>,
     pub last_will: Option<MqttLastWill>,
-    /// When true, use the built-in simulator instead of connecting to a real broker.
-    #[serde(default)]
-    pub use_simulator: bool,
     /// Broker-mode: bind address (e.g. "0.0.0.0")
     pub broker_bind_address: Option<String>,
     /// Broker-mode: max concurrent client connections
@@ -102,7 +99,6 @@ impl fmt::Debug for MqttConnectionConfig {
             .field("password", &"<redacted>")
             .field("keep_alive_secs", &self.keep_alive_secs)
             .field("clean_session", &self.clean_session)
-            .field("use_simulator", &self.use_simulator)
             .finish()
     }
 }
@@ -135,7 +131,6 @@ pub struct MqttConnectionInfo {
     pub port: u16,
     pub client_id: String,
     pub protocol_version: MqttProtocolVersion,
-    pub is_simulator: bool,
     pub last_error: Option<String>,
     /// Number of connected clients (broker mode only)
     pub connected_clients: Option<u32>,
@@ -179,6 +174,30 @@ pub enum PayloadFormat {
     Json,
     Hex,
     Base64,
+}
+
+/// Detect the format of an MQTT payload string.
+pub fn detect_payload_format(payload: &str) -> PayloadFormat {
+    let trimmed = payload.trim();
+    if trimmed.is_empty() {
+        return PayloadFormat::Text;
+    }
+    // Try JSON
+    if (trimmed.starts_with('{') && trimmed.ends_with('}'))
+        || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+    {
+        if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
+            return PayloadFormat::Json;
+        }
+    }
+    // Check if hex string
+    if trimmed.len() % 2 == 0
+        && trimmed.len() >= 4
+        && trimmed.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return PayloadFormat::Hex;
+    }
+    PayloadFormat::Text
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
