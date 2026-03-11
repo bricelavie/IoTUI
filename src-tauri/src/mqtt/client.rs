@@ -2,7 +2,17 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet, QoS, TlsConfiguration, Transport};
+use rumqttc::{
+    AsyncClient as V4Client, Event as V4Event, EventLoop as V4EventLoop,
+    MqttOptions as V4Options, Packet as V4Packet, QoS as V4QoS,
+    TlsConfiguration, Transport,
+};
+use rumqttc::v5::{
+    AsyncClient as V5Client, Event as V5Event, EventLoop as V5EventLoop,
+    MqttOptions as V5Options,
+};
+use rumqttc::v5::mqttbytes::v5::Packet as V5Packet;
+use rumqttc::v5::mqttbytes::QoS as V5QoS;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
@@ -12,22 +22,41 @@ use super::types::*;
 /// Max incoming messages buffered for polling.
 const MAX_BUFFERED_MESSAGES: usize = 10_000;
 
-/// Convert our QoS enum to rumqttc QoS.
-fn to_rumqttc_qos(qos: MqttQoS) -> QoS {
+// ─── QoS conversions ─────────────────────────────────────────────
+
+fn to_v4_qos(qos: MqttQoS) -> V4QoS {
     match qos {
-        MqttQoS::AtMostOnce => QoS::AtMostOnce,
-        MqttQoS::AtLeastOnce => QoS::AtLeastOnce,
-        MqttQoS::ExactlyOnce => QoS::ExactlyOnce,
+        MqttQoS::AtMostOnce => V4QoS::AtMostOnce,
+        MqttQoS::AtLeastOnce => V4QoS::AtLeastOnce,
+        MqttQoS::ExactlyOnce => V4QoS::ExactlyOnce,
     }
 }
 
-fn from_rumqttc_qos(qos: QoS) -> MqttQoS {
+fn from_v4_qos(qos: V4QoS) -> MqttQoS {
     match qos {
-        QoS::AtMostOnce => MqttQoS::AtMostOnce,
-        QoS::AtLeastOnce => MqttQoS::AtLeastOnce,
-        QoS::ExactlyOnce => MqttQoS::ExactlyOnce,
+        V4QoS::AtMostOnce => MqttQoS::AtMostOnce,
+        V4QoS::AtLeastOnce => MqttQoS::AtLeastOnce,
+        V4QoS::ExactlyOnce => MqttQoS::ExactlyOnce,
     }
 }
+
+fn to_v5_qos(qos: MqttQoS) -> V5QoS {
+    match qos {
+        MqttQoS::AtMostOnce => V5QoS::AtMostOnce,
+        MqttQoS::AtLeastOnce => V5QoS::AtLeastOnce,
+        MqttQoS::ExactlyOnce => V5QoS::ExactlyOnce,
+    }
+}
+
+fn from_v5_qos(qos: V5QoS) -> MqttQoS {
+    match qos {
+        V5QoS::AtMostOnce => MqttQoS::AtMostOnce,
+        V5QoS::AtLeastOnce => MqttQoS::AtLeastOnce,
+        V5QoS::ExactlyOnce => MqttQoS::ExactlyOnce,
+    }
+}
+
+// ─── TLS NoVerifier ──────────────────────────────────────────────
 
 /// A TLS certificate verifier that accepts any certificate.
 /// Used when `accept_invalid_certs` is enabled in the connection config.
@@ -80,11 +109,25 @@ impl rumqttc::tokio_rustls::rustls::client::danger::ServerCertVerifier for NoVer
     }
 }
 
+// ─── Protocol Abstraction ────────────────────────────────────────
+
+/// Wraps either a v4 or v5 MQTT client.
+enum ClientProtocol {
+    V4(V4Client),
+    V5(V5Client),
+}
+
 /// Shared buffer for incoming messages.
 type MessageBuffer = Arc<Mutex<VecDeque<MqttMessage>>>;
 
+/// Shared storage for the last connection error so the connect method can
+/// surface the real error instead of a generic timeout message.
+type LastError = Arc<Mutex<Option<String>>>;
+
+// ─── MqttClientConnection ────────────────────────────────────────
+
 pub struct MqttClientConnection {
-    client: AsyncClient,
+    client: ClientProtocol,
     buffer: MessageBuffer,
     connected: Arc<AtomicBool>,
     event_loop_handle: Option<JoinHandle<()>>,
@@ -94,54 +137,30 @@ pub struct MqttClientConnection {
 impl MqttClientConnection {
     pub async fn connect(config: &MqttConnectionConfig) -> AppResult<Self> {
         let client_id = config.client_id.clone().unwrap_or_else(|| {
-            format!("iotui-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("client"))
+            format!(
+                "iotui-{}",
+                uuid::Uuid::new_v4()
+                    .to_string()
+                    .split('-')
+                    .next()
+                    .unwrap_or("client")
+            )
         });
 
-        let mut mqttoptions = MqttOptions::new(
-            &client_id,
-            &config.host,
-            config.port,
-        );
-
-        mqttoptions.set_keep_alive(std::time::Duration::from_secs(
-            config.keep_alive_secs.unwrap_or(30) as u64,
-        ));
-        mqttoptions.set_clean_session(config.clean_session);
-
-        // Authentication
-        if let (Some(username), Some(password)) = (&config.username, &config.password) {
-            mqttoptions.set_credentials(username.clone(), password.clone());
-        }
-
-        // Last Will
-        if let Some(lw) = &config.last_will {
-            mqttoptions.set_last_will(rumqttc::LastWill::new(
-                &lw.topic,
-                lw.payload.as_bytes().to_vec(),
-                to_rumqttc_qos(lw.qos),
-                lw.retain,
-            ));
-        }
-
-        // TLS configuration
-        if let Some(tls_config) = &config.tls {
-            let transport = Self::build_tls_transport(tls_config).map_err(|e| {
-                AppError::mqtt(format!("TLS configuration error: {e}"))
-            })?;
-            mqttoptions.set_transport(transport);
-        }
-
-        let (client, eventloop) = AsyncClient::new(mqttoptions, 100);
-        let buffer: MessageBuffer = Arc::new(Mutex::new(VecDeque::with_capacity(MAX_BUFFERED_MESSAGES)));
+        let buffer: MessageBuffer =
+            Arc::new(Mutex::new(VecDeque::with_capacity(MAX_BUFFERED_MESSAGES)));
         let connected = Arc::new(AtomicBool::new(false));
         let next_msg_id = Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let last_error: LastError = Arc::new(Mutex::new(None));
 
-        let handle = Self::spawn_event_loop(
-            eventloop,
-            buffer.clone(),
-            connected.clone(),
-            next_msg_id.clone(),
-        );
+        let (client, handle) = match config.protocol_version {
+            MqttProtocolVersion::V311 => {
+                Self::connect_v4(config, &client_id, &buffer, &connected, &next_msg_id, &last_error).await?
+            }
+            MqttProtocolVersion::V5 => {
+                Self::connect_v5(config, &client_id, &buffer, &connected, &next_msg_id, &last_error).await?
+            }
+        };
 
         // Wait briefly for the connection to establish
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -154,14 +173,34 @@ impl MqttClientConnection {
 
         if !connected.load(Ordering::Relaxed) {
             // Try to clean up
-            let _ = client.disconnect().await;
-            return Err(AppError::mqtt(format!(
-                "Connection to {}:{} timed out after 5 seconds",
-                config.host, config.port
-            )));
+            match &client {
+                ClientProtocol::V4(c) => { let _ = c.disconnect().await; }
+                ClientProtocol::V5(c) => { let _ = c.disconnect().await; }
+            }
+
+            // Include the real error if the event loop captured one
+            let real_error = last_error.lock().await.take();
+            let detail = match real_error {
+                Some(err) => format!(
+                    "Connection to {}:{} failed: {}",
+                    config.host, config.port, err
+                ),
+                None => format!(
+                    "Connection to {}:{} timed out after 5 seconds",
+                    config.host, config.port
+                ),
+            };
+            return Err(AppError::mqtt(detail));
         }
 
-        log::info!("MQTT client connected to {}:{} as {}", config.host, config.port, client_id);
+        let version_label = match config.protocol_version {
+            MqttProtocolVersion::V311 => "v3.1.1",
+            MqttProtocolVersion::V5 => "v5",
+        };
+        log::info!(
+            "MQTT {} client connected to {}:{} as {}",
+            version_label, config.host, config.port, client_id
+        );
 
         Ok(Self {
             client,
@@ -171,6 +210,103 @@ impl MqttClientConnection {
             next_msg_id,
         })
     }
+
+    // ─── V4 (MQTT 3.1.1) connect path ───────────────────────────
+
+    async fn connect_v4(
+        config: &MqttConnectionConfig,
+        client_id: &str,
+        buffer: &MessageBuffer,
+        connected: &Arc<AtomicBool>,
+        next_msg_id: &Arc<std::sync::atomic::AtomicU64>,
+        last_error: &LastError,
+    ) -> AppResult<(ClientProtocol, JoinHandle<()>)> {
+        let mut opts = V4Options::new(client_id, &config.host, config.port);
+
+        opts.set_keep_alive(std::time::Duration::from_secs(
+            config.keep_alive_secs.unwrap_or(30) as u64,
+        ));
+        opts.set_clean_session(config.clean_session);
+
+        if let (Some(username), Some(password)) = (&config.username, &config.password) {
+            opts.set_credentials(username.clone(), password.clone());
+        }
+
+        if let Some(lw) = &config.last_will {
+            opts.set_last_will(rumqttc::LastWill::new(
+                &lw.topic,
+                lw.payload.as_bytes().to_vec(),
+                to_v4_qos(lw.qos),
+                lw.retain,
+            ));
+        }
+
+        if let Some(tls_config) = &config.tls {
+            let transport = Self::build_tls_transport(tls_config)
+                .map_err(|e| AppError::mqtt(format!("TLS configuration error: {e}")))?;
+            opts.set_transport(transport);
+        }
+
+        let (client, eventloop) = V4Client::new(opts, 100);
+        let handle = Self::spawn_v4_event_loop(
+            eventloop,
+            buffer.clone(),
+            connected.clone(),
+            next_msg_id.clone(),
+            last_error.clone(),
+        );
+        Ok((ClientProtocol::V4(client), handle))
+    }
+
+    // ─── V5 (MQTT 5.0) connect path ─────────────────────────────
+
+    async fn connect_v5(
+        config: &MqttConnectionConfig,
+        client_id: &str,
+        buffer: &MessageBuffer,
+        connected: &Arc<AtomicBool>,
+        next_msg_id: &Arc<std::sync::atomic::AtomicU64>,
+        last_error: &LastError,
+    ) -> AppResult<(ClientProtocol, JoinHandle<()>)> {
+        let mut opts = V5Options::new(client_id, &config.host, config.port);
+
+        opts.set_keep_alive(std::time::Duration::from_secs(
+            config.keep_alive_secs.unwrap_or(30) as u64,
+        ));
+        opts.set_clean_start(config.clean_session);
+
+        if let (Some(username), Some(password)) = (&config.username, &config.password) {
+            opts.set_credentials(username.clone(), password.clone());
+        }
+
+        if let Some(lw) = &config.last_will {
+            opts.set_last_will(rumqttc::v5::mqttbytes::v5::LastWill::new(
+                &lw.topic,
+                lw.payload.as_bytes().to_vec(),
+                to_v5_qos(lw.qos),
+                lw.retain,
+                None, // no v5-specific will properties
+            ));
+        }
+
+        if let Some(tls_config) = &config.tls {
+            let transport = Self::build_tls_transport(tls_config)
+                .map_err(|e| AppError::mqtt(format!("TLS configuration error: {e}")))?;
+            opts.set_transport(transport);
+        }
+
+        let (client, eventloop) = V5Client::new(opts, 100);
+        let handle = Self::spawn_v5_event_loop(
+            eventloop,
+            buffer.clone(),
+            connected.clone(),
+            next_msg_id.clone(),
+            last_error.clone(),
+        );
+        Ok((ClientProtocol::V5(client), handle))
+    }
+
+    // ─── TLS ─────────────────────────────────────────────────────
 
     fn build_tls_transport(tls_config: &MqttTlsConfig) -> Result<Transport, String> {
         use std::io::BufReader;
@@ -186,11 +322,11 @@ impl MqttClientConnection {
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| format!("Failed to parse CA cert: {e}"))?;
             for cert in certs {
-                root_cert_store.add(cert).map_err(|e| format!("Failed to add CA cert: {e}"))?;
+                root_cert_store
+                    .add(cert)
+                    .map_err(|e| format!("Failed to add CA cert: {e}"))?;
             }
         } else {
-            // No custom CA provided — load well-known root certificates so that
-            // connections to brokers using publicly-trusted CAs work out of the box.
             root_cert_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         }
 
@@ -217,18 +353,27 @@ impl MqttClientConnection {
             None
         };
 
-        // If accept_invalid_certs is set, skip certificate verification entirely.
-        // This is dangerous but useful for self-signed certs in dev/test environments.
         if tls_config.accept_invalid_certs {
-            log::warn!("TLS: accept_invalid_certs is enabled — certificate verification is DISABLED");
+            log::warn!(
+                "TLS: accept_invalid_certs is enabled — certificate verification is DISABLED"
+            );
             let tls_client_config = if let Some((certs, key)) = client_auth {
                 rumqttc::tokio_rustls::rustls::ClientConfig::builder()
                     .dangerous()
                     .with_custom_certificate_verifier(Arc::new(NoVerifier))
                     .with_client_auth_cert(
-                        certs.into_iter().map(|c| rumqttc::tokio_rustls::rustls::pki_types::CertificateDer::from(c.to_vec())).collect(),
-                        rumqttc::tokio_rustls::rustls::pki_types::PrivateKeyDer::try_from(key.secret_der().to_vec())
-                            .map_err(|e| format!("Invalid private key: {e}"))?,
+                        certs
+                            .into_iter()
+                            .map(|c| {
+                                rumqttc::tokio_rustls::rustls::pki_types::CertificateDer::from(
+                                    c.to_vec(),
+                                )
+                            })
+                            .collect(),
+                        rumqttc::tokio_rustls::rustls::pki_types::PrivateKeyDer::try_from(
+                            key.secret_der().to_vec(),
+                        )
+                        .map_err(|e| format!("Invalid private key: {e}"))?,
                     )
                     .map_err(|e| format!("TLS client auth config error: {e}"))?
             } else {
@@ -237,7 +382,9 @@ impl MqttClientConnection {
                     .with_custom_certificate_verifier(Arc::new(NoVerifier))
                     .with_no_client_auth()
             };
-            return Ok(Transport::Tls(TlsConfiguration::Rustls(Arc::new(tls_client_config))));
+            return Ok(Transport::Tls(TlsConfiguration::Rustls(Arc::new(
+                tls_client_config,
+            ))));
         }
 
         let tls_config = if let Some((certs, key)) = client_auth {
@@ -245,9 +392,18 @@ impl MqttClientConnection {
                 rumqttc::tokio_rustls::rustls::ClientConfig::builder()
                     .with_root_certificates(root_cert_store)
                     .with_client_auth_cert(
-                        certs.into_iter().map(|c| rumqttc::tokio_rustls::rustls::pki_types::CertificateDer::from(c.to_vec())).collect(),
-                        rumqttc::tokio_rustls::rustls::pki_types::PrivateKeyDer::try_from(key.secret_der().to_vec())
-                            .map_err(|e| format!("Invalid private key: {e}"))?,
+                        certs
+                            .into_iter()
+                            .map(|c| {
+                                rumqttc::tokio_rustls::rustls::pki_types::CertificateDer::from(
+                                    c.to_vec(),
+                                )
+                            })
+                            .collect(),
+                        rumqttc::tokio_rustls::rustls::pki_types::PrivateKeyDer::try_from(
+                            key.secret_der().to_vec(),
+                        )
+                        .map_err(|e| format!("Invalid private key: {e}"))?,
                     )
                     .map_err(|e| format!("TLS client auth config error: {e}"))?,
             ))
@@ -262,59 +418,62 @@ impl MqttClientConnection {
         Ok(Transport::Tls(tls_config))
     }
 
-    fn spawn_event_loop(
-        mut eventloop: EventLoop,
+    // ─── Event loops ─────────────────────────────────────────────
+
+    fn spawn_v4_event_loop(
+        mut eventloop: V4EventLoop,
         buffer: MessageBuffer,
         connected: Arc<AtomicBool>,
         next_msg_id: Arc<std::sync::atomic::AtomicU64>,
+        last_error: LastError,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             loop {
                 match eventloop.poll().await {
-                    Ok(event) => {
-                        match &event {
-                            Event::Incoming(Packet::ConnAck(_)) => {
-                                connected.store(true, Ordering::Relaxed);
-                                log::info!("MQTT: ConnAck received");
-                            }
-                            Event::Incoming(Packet::Publish(publish)) => {
-                                let payload_bytes = publish.payload.to_vec();
-                                let payload_str = String::from_utf8_lossy(&payload_bytes).to_string();
-                                let format = detect_payload_format(&payload_str);
-                                let msg_id = next_msg_id.fetch_add(1, Ordering::Relaxed);
-
-                                let msg = MqttMessage {
-                                    id: format!("recv-{msg_id}"),
-                                    topic: publish.topic.clone(),
-                                    payload: payload_str,
-                                    payload_format: format,
-                                    qos: from_rumqttc_qos(publish.qos),
-                                    retain: publish.retain,
-                                    timestamp: chrono::Utc::now()
-                                        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-                                        .to_string(),
-                                    payload_size_bytes: payload_bytes.len(),
-                                };
-
-                                let mut buf = buffer.lock().await;
-                                if buf.len() >= MAX_BUFFERED_MESSAGES {
-                                    buf.pop_front();
-                                }
-                                buf.push_back(msg);
-                            }
-                            Event::Incoming(Packet::Disconnect) => {
-                                connected.store(false, Ordering::Relaxed);
-                                log::warn!("MQTT: Server sent Disconnect");
-                            }
-                            _ => {}
+                    Ok(event) => match &event {
+                        V4Event::Incoming(V4Packet::ConnAck(_)) => {
+                            connected.store(true, Ordering::Relaxed);
+                            log::info!("MQTT v4: ConnAck received");
                         }
-                    }
+                        V4Event::Incoming(V4Packet::Publish(publish)) => {
+                            let payload_bytes = publish.payload.to_vec();
+                            let payload_str =
+                                String::from_utf8_lossy(&payload_bytes).to_string();
+                            let format = detect_payload_format(&payload_str);
+                            let msg_id = next_msg_id.fetch_add(1, Ordering::Relaxed);
+
+                            let msg = MqttMessage {
+                                id: format!("recv-{msg_id}"),
+                                topic: publish.topic.clone(),
+                                payload: payload_str,
+                                payload_format: format,
+                                qos: from_v4_qos(publish.qos),
+                                retain: publish.retain,
+                                timestamp: chrono::Utc::now()
+                                    .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                                    .to_string(),
+                                payload_size_bytes: payload_bytes.len(),
+                            };
+
+                            let mut buf = buffer.lock().await;
+                            if buf.len() >= MAX_BUFFERED_MESSAGES {
+                                buf.pop_front();
+                            }
+                            buf.push_back(msg);
+                        }
+                        V4Event::Incoming(V4Packet::Disconnect) => {
+                            connected.store(false, Ordering::Relaxed);
+                            log::warn!("MQTT v4: Server sent Disconnect");
+                        }
+                        _ => {}
+                    },
                     Err(e) => {
                         let was_connected = connected.swap(false, Ordering::Relaxed);
-                        if was_connected {
-                            log::warn!("MQTT event loop error (will retry): {e}");
-                        }
-                        // rumqttc automatically reconnects, give it time
+                        // Always log event loop errors (not just when previously connected)
+                        log::warn!("MQTT v4 event loop error (connected={}): {e}", was_connected);
+                        // Store the error so the connect method can surface it
+                        let mut err = last_error.lock().await;
+                        *err = Some(e.to_string());
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     }
                 }
@@ -322,19 +481,98 @@ impl MqttClientConnection {
         })
     }
 
+    fn spawn_v5_event_loop(
+        mut eventloop: V5EventLoop,
+        buffer: MessageBuffer,
+        connected: Arc<AtomicBool>,
+        next_msg_id: Arc<std::sync::atomic::AtomicU64>,
+        last_error: LastError,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                match eventloop.poll().await {
+                    Ok(event) => match &event {
+                        V5Event::Incoming(V5Packet::ConnAck(_)) => {
+                            connected.store(true, Ordering::Relaxed);
+                            log::info!("MQTT v5: ConnAck received");
+                        }
+                        V5Event::Incoming(V5Packet::Publish(publish)) => {
+                            let payload_bytes = publish.payload.to_vec();
+                            let payload_str =
+                                String::from_utf8_lossy(&payload_bytes).to_string();
+                            let topic =
+                                String::from_utf8_lossy(&publish.topic).to_string();
+                            let format = detect_payload_format(&payload_str);
+                            let msg_id = next_msg_id.fetch_add(1, Ordering::Relaxed);
+
+                            let msg = MqttMessage {
+                                id: format!("recv-{msg_id}"),
+                                topic,
+                                payload: payload_str,
+                                payload_format: format,
+                                qos: from_v5_qos(publish.qos),
+                                retain: publish.retain,
+                                timestamp: chrono::Utc::now()
+                                    .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                                    .to_string(),
+                                payload_size_bytes: payload_bytes.len(),
+                            };
+
+                            let mut buf = buffer.lock().await;
+                            if buf.len() >= MAX_BUFFERED_MESSAGES {
+                                buf.pop_front();
+                            }
+                            buf.push_back(msg);
+                        }
+                        V5Event::Incoming(V5Packet::Disconnect(_)) => {
+                            connected.store(false, Ordering::Relaxed);
+                            log::warn!("MQTT v5: Server sent Disconnect");
+                        }
+                        _ => {}
+                    },
+                    Err(e) => {
+                        let was_connected = connected.swap(false, Ordering::Relaxed);
+                        log::warn!("MQTT v5 event loop error (connected={}): {e}", was_connected);
+                        let mut err = last_error.lock().await;
+                        *err = Some(e.to_string());
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        })
+    }
+
+    // ─── Public API ──────────────────────────────────────────────
+
     pub async fn subscribe(&self, topic: &str, qos: MqttQoS) -> AppResult<()> {
-        self.client
-            .subscribe(topic, to_rumqttc_qos(qos))
-            .await
-            .map_err(|e| AppError::mqtt(format!("Subscribe failed: {e}")))?;
+        match &self.client {
+            ClientProtocol::V4(c) => {
+                c.subscribe(topic, to_v4_qos(qos))
+                    .await
+                    .map_err(|e| AppError::mqtt(format!("Subscribe failed: {e}")))?;
+            }
+            ClientProtocol::V5(c) => {
+                c.subscribe(topic, to_v5_qos(qos))
+                    .await
+                    .map_err(|e| AppError::mqtt(format!("Subscribe failed: {e}")))?;
+            }
+        }
         Ok(())
     }
 
     pub async fn unsubscribe(&self, topic: &str) -> AppResult<()> {
-        self.client
-            .unsubscribe(topic)
-            .await
-            .map_err(|e| AppError::mqtt(format!("Unsubscribe failed: {e}")))?;
+        match &self.client {
+            ClientProtocol::V4(c) => {
+                c.unsubscribe(topic)
+                    .await
+                    .map_err(|e| AppError::mqtt(format!("Unsubscribe failed: {e}")))?;
+            }
+            ClientProtocol::V5(c) => {
+                c.unsubscribe(topic)
+                    .await
+                    .map_err(|e| AppError::mqtt(format!("Unsubscribe failed: {e}")))?;
+            }
+        }
         Ok(())
     }
 
@@ -345,10 +583,18 @@ impl MqttClientConnection {
         qos: MqttQoS,
         retain: bool,
     ) -> AppResult<()> {
-        self.client
-            .publish(topic, to_rumqttc_qos(qos), retain, payload)
-            .await
-            .map_err(|e| AppError::mqtt(format!("Publish failed: {e}")))?;
+        match &self.client {
+            ClientProtocol::V4(c) => {
+                c.publish(topic, to_v4_qos(qos), retain, payload)
+                    .await
+                    .map_err(|e| AppError::mqtt(format!("Publish failed: {e}")))?;
+            }
+            ClientProtocol::V5(c) => {
+                c.publish(topic, to_v5_qos(qos), retain, payload.to_vec())
+                    .await
+                    .map_err(|e| AppError::mqtt(format!("Publish failed: {e}")))?;
+            }
+        }
         Ok(())
     }
 
@@ -363,10 +609,18 @@ impl MqttClientConnection {
 
     pub async fn disconnect(&self) -> AppResult<()> {
         self.connected.store(false, Ordering::Relaxed);
-        self.client
-            .disconnect()
-            .await
-            .map_err(|e| AppError::mqtt(format!("Disconnect failed: {e}")))?;
+        match &self.client {
+            ClientProtocol::V4(c) => {
+                c.disconnect()
+                    .await
+                    .map_err(|e| AppError::mqtt(format!("Disconnect failed: {e}")))?;
+            }
+            ClientProtocol::V5(c) => {
+                c.disconnect()
+                    .await
+                    .map_err(|e| AppError::mqtt(format!("Disconnect failed: {e}")))?;
+            }
+        }
         Ok(())
     }
 }

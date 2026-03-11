@@ -263,7 +263,7 @@ export const MqttMessagePanel: React.FC<{
     return result;
   }, [messages, selectedTopic, filters]);
 
-  const displayed = useMemo(() => filtered.slice(-200).reverse(), [filtered]);
+  const displayed = useMemo(() => [...filtered].reverse(), [filtered]);
 
   const activeFilterCount = useMemo(() => {
     let count = 0;

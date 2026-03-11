@@ -65,9 +65,27 @@ export const useMqttTopicStore = create<MqttTopicStore>((set, get) => ({
   refreshTopics: async (connectionId) => {
     set({ isRefreshing: true });
     try {
-      const topics = await mqtt.mqttGetTopics(connectionId);
-      const topicTree = buildTopicTree(topics);
-      set({ topics, topicTree, isRefreshing: false });
+      const backendTopics = await mqtt.mqttGetTopics(connectionId);
+      const { topics: existingTopics } = get();
+
+      // Merge: keep frontend-derived topics, let backend topics override
+      const topicMap = new Map<string, MqttTopicInfo>(
+        existingTopics.map((t) => [t.topic, t])
+      );
+      for (const t of backendTopics) {
+        topicMap.set(t.topic, t);
+      }
+
+      const merged = Array.from(topicMap.values());
+      const topicTree = buildTopicTree(merged);
+
+      // Auto-expand top-level nodes
+      const expandedNodes = new Set(get().expandedNodes);
+      for (const node of topicTree.values()) {
+        expandedNodes.add(node.fullTopic);
+      }
+
+      set({ topics: merged, topicTree, expandedNodes, isRefreshing: false });
     } catch (e) {
       set({ isRefreshing: false });
       throw e;
@@ -78,7 +96,9 @@ export const useMqttTopicStore = create<MqttTopicStore>((set, get) => ({
     const maxPerTopic = getSetting("mqttMaxMessagesPerTopic");
     const { messageHistory, topics } = get();
     const newHistory = new Map(messageHistory);
-    let topicsChanged = false;
+    const topicMap = new Map<string, MqttTopicInfo>(
+      topics.map((t) => [t.topic, { ...t }])
+    );
 
     for (const msg of messages) {
       const existing = newHistory.get(msg.topic) ?? [];
@@ -88,18 +108,42 @@ export const useMqttTopicStore = create<MqttTopicStore>((set, get) => ({
       }
       newHistory.set(msg.topic, updated);
 
-      // Update last message on topic tree
-      if (!topics.some((t) => t.topic === msg.topic)) {
-        topicsChanged = true;
+      // Update or create MqttTopicInfo entry for this topic
+      const existingInfo = topicMap.get(msg.topic);
+      if (existingInfo) {
+        existingInfo.message_count += 1;
+        existingInfo.last_payload_preview = msg.payload.slice(0, 100);
+        existingInfo.last_timestamp = msg.timestamp;
+        if (msg.retain) {
+          existingInfo.retained_payload = msg.payload;
+        }
+      } else {
+        topicMap.set(msg.topic, {
+          topic: msg.topic,
+          message_count: 1,
+          last_payload_preview: msg.payload.slice(0, 100),
+          last_timestamp: msg.timestamp,
+          subscriber_count: 0,
+          retained_payload: msg.retain ? msg.payload : null,
+        });
       }
     }
 
-    set({ messageHistory: newHistory });
+    const newTopics = Array.from(topicMap.values());
+    const newTree = buildTopicTree(newTopics);
 
-    // If new topics appeared, the tree should be refreshed by the polling consumer
-    if (topicsChanged) {
-      // The caller (subscription store polling effect) will trigger refreshTopics
+    // Auto-expand top-level nodes
+    const expandedNodes = new Set(get().expandedNodes);
+    for (const node of newTree.values()) {
+      expandedNodes.add(node.fullTopic);
     }
+
+    set({
+      messageHistory: newHistory,
+      topics: newTopics,
+      topicTree: newTree,
+      expandedNodes,
+    });
   },
 
   selectTopic: (topic) => set({ selectedTopic: topic }),

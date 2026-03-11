@@ -264,7 +264,7 @@ export default function App() {
   const mqttRefreshSubscriptions = useMqttSubscriptionStore((s) => s.refreshSubscriptions);
   const mqttStartPolling = useMqttSubscriptionStore((s) => s.startPolling);
   const mqttStopPolling = useMqttSubscriptionStore((s) => s.stopPolling);
-  const mqttMessages = useMqttSubscriptionStore((s) => s.messages);
+  const mqttLatestBatch = useMqttSubscriptionStore((s) => s.latestBatch);
   const mqttAddMessages = useMqttTopicStore((s) => s.addMessages);
   const mqttRefreshTopics = useMqttTopicStore((s) => s.refreshTopics);
   const mqttClearTopics = useMqttTopicStore((s) => s.clearAll);
@@ -349,12 +349,12 @@ export default function App() {
     return () => clearInterval(interval);
   }, [activeProtocol, mqttActiveConnectionId, mqttRefreshStatus]);
 
-  // Feed polled messages into topic store
+  // Feed newly polled messages into topic store
   useEffect(() => {
-    if (mqttMessages.length > 0) {
-      mqttAddMessages(mqttMessages);
+    if (mqttLatestBatch.length > 0) {
+      mqttAddMessages(mqttLatestBatch);
     }
-  }, [mqttMessages, mqttAddMessages]);
+  }, [mqttLatestBatch, mqttAddMessages]);
 
   // Periodically refresh MQTT topics while connected
   useEffect(() => {

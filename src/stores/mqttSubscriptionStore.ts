@@ -23,6 +23,7 @@ interface PollController {
 interface MqttSubscriptionStore {
   subscriptions: MqttSubscriptionInfo[];
   messages: MqttMessage[];
+  latestBatch: MqttMessage[];
   isPolling: boolean;
   pollError: string | null;
   lastPollAt: number | null;
@@ -48,6 +49,7 @@ function clearPollController() {
 export const useMqttSubscriptionStore = create<MqttSubscriptionStore>((set, get) => ({
   subscriptions: [],
   messages: [],
+  latestBatch: [],
   isPolling: false,
   pollError: null,
   lastPollAt: null,
@@ -121,7 +123,7 @@ export const useMqttSubscriptionStore = create<MqttSubscriptionStore>((set, get)
           if (updated.length > maxMessages) {
             updated = updated.slice(updated.length - maxMessages);
           }
-          set({ messages: updated, pollError: null, lastPollAt: Date.now() });
+          set({ messages: updated, latestBatch: response.messages, pollError: null, lastPollAt: Date.now() });
         } else {
           set({ pollError: null, lastPollAt: Date.now() });
         }
@@ -154,13 +156,14 @@ export const useMqttSubscriptionStore = create<MqttSubscriptionStore>((set, get)
     log("info", "subscription", "mqtt_stopPolling", "MQTT polling stopped");
   },
 
-  clearMessages: () => set({ messages: [] }),
+  clearMessages: () => set({ messages: [], latestBatch: [] }),
 
   clearAll: () => {
     get().stopPolling();
     set({
       subscriptions: [],
       messages: [],
+      latestBatch: [],
       isPolling: false,
       pollError: null,
       lastPollAt: null,
