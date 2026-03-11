@@ -117,33 +117,32 @@ export const MqttSubscriptionManager: React.FC = () => {
 
       {/* Subscribe form */}
       <div className="p-3 border-b border-iot-border flex-shrink-0 space-y-2">
+        <Input
+          value={topicFilter}
+          onChange={(e) => setTopicFilter(e.target.value)}
+          placeholder="topic/filter/#"
+          className="font-mono text-xs"
+          onKeyDown={(e) => e.key === "Enter" && handleSubscribe()}
+        />
         <div className="flex gap-2">
-          <div className="flex-1">
-            <Input
-              value={topicFilter}
-              onChange={(e) => setTopicFilter(e.target.value)}
-              placeholder="topic/filter/#"
-              className="font-mono text-xs"
-              onKeyDown={(e) => e.key === "Enter" && handleSubscribe()}
-            />
-          </div>
           <Select
             options={QOS_OPTIONS}
             value={qos}
             onChange={(e) => setQos(e.target.value as MqttQoS)}
+            className="text-xs"
           />
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={handleSubscribe}
+            loading={isSubscribing}
+            disabled={!activeConnectionId || !topicFilter.trim()}
+            className="flex-1"
+          >
+            <Plus size={12} />
+            Subscribe
+          </Button>
         </div>
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={handleSubscribe}
-          loading={isSubscribing}
-          disabled={!activeConnectionId || !topicFilter.trim()}
-          className="w-full"
-        >
-          <Plus size={12} />
-          Subscribe
-        </Button>
       </div>
 
       {/* Subscription list */}

@@ -275,7 +275,7 @@ export const NodeAttributePanel: React.FC = () => {
               </button>
             </div>
             {details.description && details.description !== "[null]" && (
-              <p className="text-xs text-iot-text-muted mt-1">{details.description}</p>
+              <p className="text-xs text-iot-text-muted mt-1 line-clamp-2">{details.description}</p>
             )}
           </div>
           <div className="flex gap-1.5 flex-shrink-0">

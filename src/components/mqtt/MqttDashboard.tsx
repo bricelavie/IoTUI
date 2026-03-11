@@ -147,7 +147,7 @@ export const MqttDashboard: React.FC = () => {
         <div className="flex items-center gap-2">
           <LayoutDashboard size={14} className="text-iot-cyan" />
           <span className="text-xs font-semibold text-iot-text-secondary uppercase tracking-wider">
-            MQTT Dashboard
+            Live Dashboard
           </span>
           <Badge variant="info">{numericTopics.length} topics</Badge>
         </div>

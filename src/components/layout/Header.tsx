@@ -39,10 +39,10 @@ export const Header: React.FC = () => {
     export: "Data Export",
     logs: "Logs",
     settings: "Settings",
-    mqtt_connection: "MQTT Connection",
-    mqtt_explorer: "MQTT Explorer",
-    mqtt_dashboard: "MQTT Dashboard",
-    mqtt_broker_admin: "Broker Administration",
+    mqtt_connection: "Connection Manager",
+    mqtt_explorer: "Topic Explorer",
+    mqtt_dashboard: "Live Dashboard",
+    mqtt_broker_admin: "Broker Admin",
   };
 
   if (activeProtocol === "mqtt") {

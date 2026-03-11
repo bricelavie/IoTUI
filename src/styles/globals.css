@@ -337,6 +337,18 @@
   }
 }
 
+/* ─── Settings number input spinners ─────────────────────────────
+   Make the native up/down arrows visible on dark backgrounds. */
+
+.settings-number-input::-webkit-inner-spin-button,
+.settings-number-input::-webkit-outer-spin-button {
+  -webkit-appearance: inner-spin-button;
+  opacity: 1;
+  height: 100%;
+  cursor: pointer;
+  filter: invert(0.7);
+}
+
 @keyframes toast-slide-in {
   from {
     opacity: 0;

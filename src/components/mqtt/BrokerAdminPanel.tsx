@@ -57,7 +57,7 @@ export const BrokerAdminPanel: React.FC = () => {
       <div className="max-w-5xl mx-auto space-y-4">
         <div className="flex items-center gap-2">
           <Server size={16} className="text-iot-cyan" />
-          <h2 className="text-sm font-semibold text-iot-text-primary">Broker Administration</h2>
+          <h2 className="text-sm font-semibold text-iot-text-primary">Broker Admin</h2>
           {isPolling && (
             <span className="flex items-center gap-1 text-2xs text-iot-cyan">
               <span className="w-1.5 h-1.5 rounded-full bg-iot-cyan animate-pulse-slow" />

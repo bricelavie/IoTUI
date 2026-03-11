@@ -568,9 +568,8 @@ export const ConnectionPanel: React.FC = () => {
                   />
                   <div className="p-3 rounded-lg bg-iot-bg-base border border-iot-border">
                     <p className="text-xs text-iot-text-muted leading-relaxed">
-                      The session timeout determines how long the server will keep the session alive without
-                      communication. A typical value is <span className="font-mono text-iot-text-secondary">60000ms</span> (60 seconds).
-                      Increase this for unstable connections.
+                      Session timeout defines how long the server keeps the session alive without
+                      communication. Default is <span className="font-mono text-iot-text-secondary">60000ms</span> (60s).
                     </p>
                   </div>
                 </div>

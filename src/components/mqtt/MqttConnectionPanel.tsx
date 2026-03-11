@@ -331,10 +331,10 @@ export const MqttConnectionPanel: React.FC = () => {
                 <div className="flex flex-col items-center gap-6 py-4">
                   <div className="text-center">
                     <h3 className="text-base font-semibold text-iot-text-primary">
-                      How would you like to use MQTT?
+                      Choose Connection Mode
                     </h3>
                     <p className="text-xs text-iot-text-muted mt-1">
-                      Choose one mode — you can create separate connections for each.
+                      Connect to an external broker or start an embedded one
                     </p>
                   </div>
                   <div className="flex gap-4 w-full max-w-lg">
@@ -510,8 +510,8 @@ export const MqttConnectionPanel: React.FC = () => {
                   />
                   <div className="p-3 rounded-lg bg-iot-bg-base border border-iot-border">
                     <p className="text-xs text-iot-text-muted leading-relaxed">
-                      The embedded broker will listen on <span className="font-mono text-iot-text-secondary">{brokerBind}:{port}</span> for
-                      incoming MQTT client connections. External clients can publish and subscribe through this broker.
+                      The embedded broker will listen on <span className="font-mono text-iot-text-secondary">{brokerBind}:{port}</span>.
+                      External clients can connect, publish, and subscribe.
                     </p>
                   </div>
                 </div>
