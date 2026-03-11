@@ -349,6 +349,15 @@ export default function App() {
     return () => clearInterval(interval);
   }, [activeProtocol, mqttActiveConnectionId, mqttRefreshStatus]);
 
+  // Periodically refresh MQTT subscription info (message counts, rates)
+  useEffect(() => {
+    if (activeProtocol !== "mqtt" || !mqttActiveConnectionId) return;
+    const interval = setInterval(() => {
+      void mqttRefreshSubscriptions(mqttActiveConnectionId);
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [activeProtocol, mqttActiveConnectionId, mqttRefreshSubscriptions]);
+
   // Feed newly polled messages into topic store
   useEffect(() => {
     if (mqttLatestBatch.length > 0) {

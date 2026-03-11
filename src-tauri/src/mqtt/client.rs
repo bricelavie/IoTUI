@@ -19,6 +19,13 @@ use tokio::task::JoinHandle;
 use crate::error::{AppError, AppResult};
 use super::types::*;
 
+/// Tracks active subscriptions so we can re-subscribe after reconnection.
+type ActiveSubscriptions = Arc<Mutex<Vec<(String, MqttQoS)>>>;
+
+/// Channel capacity for rumqttc request channel (client → event loop).
+/// Must be large enough to not block when bursts of publishes arrive.
+const CHANNEL_CAPACITY: usize = 10_000;
+
 /// Max incoming messages buffered for polling.
 const MAX_BUFFERED_MESSAGES: usize = 10_000;
 
@@ -132,6 +139,7 @@ pub struct MqttClientConnection {
     connected: Arc<AtomicBool>,
     event_loop_handle: Option<JoinHandle<()>>,
     next_msg_id: Arc<std::sync::atomic::AtomicU64>,
+    active_subscriptions: ActiveSubscriptions,
 }
 
 impl MqttClientConnection {
@@ -152,13 +160,14 @@ impl MqttClientConnection {
         let connected = Arc::new(AtomicBool::new(false));
         let next_msg_id = Arc::new(std::sync::atomic::AtomicU64::new(1));
         let last_error: LastError = Arc::new(Mutex::new(None));
+        let active_subscriptions: ActiveSubscriptions = Arc::new(Mutex::new(Vec::new()));
 
         let (client, handle) = match config.protocol_version {
             MqttProtocolVersion::V311 => {
-                Self::connect_v4(config, &client_id, &buffer, &connected, &next_msg_id, &last_error).await?
+                Self::connect_v4(config, &client_id, &buffer, &connected, &next_msg_id, &last_error, &active_subscriptions).await?
             }
             MqttProtocolVersion::V5 => {
-                Self::connect_v5(config, &client_id, &buffer, &connected, &next_msg_id, &last_error).await?
+                Self::connect_v5(config, &client_id, &buffer, &connected, &next_msg_id, &last_error, &active_subscriptions).await?
             }
         };
 
@@ -208,6 +217,7 @@ impl MqttClientConnection {
             connected,
             event_loop_handle: Some(handle),
             next_msg_id,
+            active_subscriptions,
         })
     }
 
@@ -220,6 +230,7 @@ impl MqttClientConnection {
         connected: &Arc<AtomicBool>,
         next_msg_id: &Arc<std::sync::atomic::AtomicU64>,
         last_error: &LastError,
+        active_subscriptions: &ActiveSubscriptions,
     ) -> AppResult<(ClientProtocol, JoinHandle<()>)> {
         let mut opts = V4Options::new(client_id, &config.host, config.port);
 
@@ -247,13 +258,16 @@ impl MqttClientConnection {
             opts.set_transport(transport);
         }
 
-        let (client, eventloop) = V4Client::new(opts, 100);
+        let (client, eventloop) = V4Client::new(opts, CHANNEL_CAPACITY);
+        let resubscribe_client = client.clone();
         let handle = Self::spawn_v4_event_loop(
             eventloop,
             buffer.clone(),
             connected.clone(),
             next_msg_id.clone(),
             last_error.clone(),
+            resubscribe_client,
+            active_subscriptions.clone(),
         );
         Ok((ClientProtocol::V4(client), handle))
     }
@@ -267,6 +281,7 @@ impl MqttClientConnection {
         connected: &Arc<AtomicBool>,
         next_msg_id: &Arc<std::sync::atomic::AtomicU64>,
         last_error: &LastError,
+        active_subscriptions: &ActiveSubscriptions,
     ) -> AppResult<(ClientProtocol, JoinHandle<()>)> {
         let mut opts = V5Options::new(client_id, &config.host, config.port);
 
@@ -295,13 +310,16 @@ impl MqttClientConnection {
             opts.set_transport(transport);
         }
 
-        let (client, eventloop) = V5Client::new(opts, 100);
+        let (client, eventloop) = V5Client::new(opts, CHANNEL_CAPACITY);
+        let resubscribe_client = client.clone();
         let handle = Self::spawn_v5_event_loop(
             eventloop,
             buffer.clone(),
             connected.clone(),
             next_msg_id.clone(),
             last_error.clone(),
+            resubscribe_client,
+            active_subscriptions.clone(),
         );
         Ok((ClientProtocol::V5(client), handle))
     }
@@ -426,16 +444,57 @@ impl MqttClientConnection {
         connected: Arc<AtomicBool>,
         next_msg_id: Arc<std::sync::atomic::AtomicU64>,
         last_error: LastError,
+        resubscribe_client: V4Client,
+        active_subscriptions: ActiveSubscriptions,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
+            // Track whether we have ever been connected so we can distinguish
+            // the initial ConnAck from a reconnection ConnAck.
+            let mut has_been_connected = false;
+            let mut msg_count: u64 = 0;
+            let mut last_log_at = tokio::time::Instant::now();
+
             loop {
                 match eventloop.poll().await {
                     Ok(event) => match &event {
                         V4Event::Incoming(V4Packet::ConnAck(_)) => {
+                            let is_reconnect = has_been_connected;
+                            has_been_connected = true;
                             connected.store(true, Ordering::Relaxed);
-                            log::info!("MQTT v4: ConnAck received");
+
+                            if is_reconnect {
+                                log::info!("MQTT v4: Reconnected — re-subscribing to tracked topics");
+                                let subs = active_subscriptions.lock().await.clone();
+                                for (topic, qos) in &subs {
+                                    if let Err(e) = resubscribe_client
+                                        .subscribe(topic, to_v4_qos(*qos))
+                                        .await
+                                    {
+                                        log::error!(
+                                            "MQTT v4: Failed to re-subscribe to {}: {e}",
+                                            topic
+                                        );
+                                    } else {
+                                        log::info!("MQTT v4: Re-subscribed to {}", topic);
+                                    }
+                                }
+                            } else {
+                                log::info!("MQTT v4: ConnAck received (initial)");
+                            }
                         }
                         V4Event::Incoming(V4Packet::Publish(publish)) => {
+                            msg_count += 1;
+                            // Log a progress message every 30 seconds so we can
+                            // tell if the event loop is alive and receiving data.
+                            let now = tokio::time::Instant::now();
+                            if now.duration_since(last_log_at) >= std::time::Duration::from_secs(30) {
+                                log::info!(
+                                    "MQTT v4: Event loop alive — {} messages received so far",
+                                    msg_count
+                                );
+                                last_log_at = now;
+                            }
+
                             let payload_bytes = publish.payload.to_vec();
                             let payload_str =
                                 String::from_utf8_lossy(&payload_bytes).to_string();
@@ -487,16 +546,53 @@ impl MqttClientConnection {
         connected: Arc<AtomicBool>,
         next_msg_id: Arc<std::sync::atomic::AtomicU64>,
         last_error: LastError,
+        resubscribe_client: V5Client,
+        active_subscriptions: ActiveSubscriptions,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
+            let mut has_been_connected = false;
+            let mut msg_count: u64 = 0;
+            let mut last_log_at = tokio::time::Instant::now();
+
             loop {
                 match eventloop.poll().await {
                     Ok(event) => match &event {
                         V5Event::Incoming(V5Packet::ConnAck(_)) => {
+                            let is_reconnect = has_been_connected;
+                            has_been_connected = true;
                             connected.store(true, Ordering::Relaxed);
-                            log::info!("MQTT v5: ConnAck received");
+
+                            if is_reconnect {
+                                log::info!("MQTT v5: Reconnected — re-subscribing to tracked topics");
+                                let subs = active_subscriptions.lock().await.clone();
+                                for (topic, qos) in &subs {
+                                    if let Err(e) = resubscribe_client
+                                        .subscribe(topic, to_v5_qos(*qos))
+                                        .await
+                                    {
+                                        log::error!(
+                                            "MQTT v5: Failed to re-subscribe to {}: {e}",
+                                            topic
+                                        );
+                                    } else {
+                                        log::info!("MQTT v5: Re-subscribed to {}", topic);
+                                    }
+                                }
+                            } else {
+                                log::info!("MQTT v5: ConnAck received (initial)");
+                            }
                         }
                         V5Event::Incoming(V5Packet::Publish(publish)) => {
+                            msg_count += 1;
+                            let now = tokio::time::Instant::now();
+                            if now.duration_since(last_log_at) >= std::time::Duration::from_secs(30) {
+                                log::info!(
+                                    "MQTT v5: Event loop alive — {} messages received so far",
+                                    msg_count
+                                );
+                                last_log_at = now;
+                            }
+
                             let payload_bytes = publish.payload.to_vec();
                             let payload_str =
                                 String::from_utf8_lossy(&payload_bytes).to_string();
@@ -557,6 +653,13 @@ impl MqttClientConnection {
                     .map_err(|e| AppError::mqtt(format!("Subscribe failed: {e}")))?;
             }
         }
+        // Track the subscription so we can re-subscribe on reconnection
+        {
+            let mut subs = self.active_subscriptions.lock().await;
+            // Replace if the same topic already exists (e.g. QoS change)
+            subs.retain(|(t, _)| t != topic);
+            subs.push((topic.to_string(), qos));
+        }
         Ok(())
     }
 
@@ -572,6 +675,11 @@ impl MqttClientConnection {
                     .await
                     .map_err(|e| AppError::mqtt(format!("Unsubscribe failed: {e}")))?;
             }
+        }
+        // Remove from tracker
+        {
+            let mut subs = self.active_subscriptions.lock().await;
+            subs.retain(|(t, _)| t != topic);
         }
         Ok(())
     }
