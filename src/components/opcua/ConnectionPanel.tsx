@@ -13,7 +13,7 @@ import { ConfirmDialog } from "@/components/ui/Modal";
 import { toast } from "@/stores/notificationStore";
 import {
   Search, Server, Shield, Trash2, Plus, Save, BookOpen, Clock,
-  AlertCircle, FileKey, MonitorSmartphone, Wifi, ChevronRight,
+  AlertCircle, MonitorSmartphone, Wifi, ChevronRight,
   Lock, Settings2, Network,
 } from "lucide-react";
 
@@ -37,7 +37,7 @@ const SECURITY_MODES = [
 const AUTH_TYPES = [
   { value: "anonymous", label: "Anonymous" },
   { value: "username_password", label: "Username / Password" },
-  { value: "certificate", label: "Certificate (not yet supported)", disabled: true },
+  { value: "certificate", label: "Certificate" },
 ];
 
 // ─── Saved Profiles ──────────────────────────────────────────────
@@ -130,6 +130,7 @@ export const ConnectionPanel: React.FC = () => {
   const [keyPath, setKeyPath] = useState("");
   const [sessionTimeout, setSessionTimeout] = useState("60000");
   const [urlError, setUrlError] = useState("");
+  const [trustServerCerts, setTrustServerCerts] = useState(false);
 
   // ─── Profiles & recents ────────────────────────────────────────
   const [profiles, setProfiles] = useState<SavedProfile[]>([]);
@@ -226,10 +227,6 @@ export const ConnectionPanel: React.FC = () => {
       toast.warning("Invalid URL", "Endpoint must start with opc.tcp://");
       return;
     }
-    if (authType === "certificate" && !useSimulator) {
-      toast.warning("Certificate auth unavailable", "Live certificate authentication is not implemented yet.");
-      return;
-    }
     try {
       const id = await connect({
         name,
@@ -241,6 +238,9 @@ export const ConnectionPanel: React.FC = () => {
         password: authType === "username_password" ? password : undefined,
         session_timeout: Number(sessionTimeout) || 60000,
         use_simulator: useSimulator,
+        trust_server_certs: trustServerCerts,
+        certificate_path: authType === "certificate" ? certPath : undefined,
+        private_key_path: authType === "certificate" ? keyPath : undefined,
       });
       addRecentEndpoint(endpointUrl);
       setRecentEndpoints(loadRecentEndpoints());
@@ -529,12 +529,6 @@ export const ConnectionPanel: React.FC = () => {
 
                   {authType === "certificate" && (
                     <div className="space-y-3">
-                      <div className="flex items-center gap-2 p-2 rounded bg-iot-amber/5 border border-iot-amber/20">
-                        <FileKey size={14} className="text-iot-amber flex-shrink-0" />
-                        <span className="text-xs text-iot-amber">
-                          Certificate auth is not yet implemented for live connections
-                        </span>
-                      </div>
                       <Input
                         label="Certificate Path (.pem / .der)"
                         value={certPath}
@@ -551,6 +545,26 @@ export const ConnectionPanel: React.FC = () => {
                       />
                     </div>
                   )}
+
+                  {/* Trust server certs toggle */}
+                  <div className="pt-2 border-t border-iot-border">
+                    <label className="flex items-center gap-2 cursor-pointer group">
+                      <input
+                        type="checkbox"
+                        checked={trustServerCerts}
+                        onChange={(e) => setTrustServerCerts(e.target.checked)}
+                        className="rounded border-iot-border text-iot-cyan focus:ring-iot-cyan"
+                      />
+                      <span className="text-xs text-iot-text-secondary group-hover:text-iot-text-primary transition-colors">
+                        Trust all server certificates (including self-signed)
+                      </span>
+                    </label>
+                    {trustServerCerts && (
+                      <p className="text-2xs text-iot-amber mt-1 ml-5">
+                        Warning: disables server certificate verification. Use only for development/testing.
+                      </p>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -586,6 +600,15 @@ export const ConnectionPanel: React.FC = () => {
                     <ReviewRow label="Policy" value={secPolicy} />
                     <ReviewRow label="Mode" value={secMode} />
                     <ReviewRow label="Authentication" value={authType === "anonymous" ? "Anonymous" : authType === "username_password" ? `Username (${username})` : "Certificate"} />
+                    {authType === "certificate" && (
+                      <>
+                        <ReviewRow label="Cert" value={<span className="font-mono text-2xs truncate">{certPath || "(none)"}</span>} />
+                        <ReviewRow label="Key" value={<span className="font-mono text-2xs truncate">{keyPath || "(none)"}</span>} />
+                      </>
+                    )}
+                    {trustServerCerts && (
+                      <ReviewRow label="Trust Certs" value={<span className="text-iot-amber">All (insecure)</span>} />
+                    )}
                   </ReviewSection>
                   <ReviewSection title="Session" icon={<Settings2 size={12} />} onEdit={() => goToStep(3)}>
                     <ReviewRow label="Timeout" value={`${sessionTimeout}ms`} />

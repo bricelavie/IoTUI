@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useSettingsStore, type AppSettings } from "@/stores/settingsStore";
 import { Button, Card, ThemeSelector } from "@/components/ui/index";
-import { RotateCcw, ScrollText, Bell, Activity, Palette, Radio, Server, Network } from "lucide-react";
+import { RotateCcw, ScrollText, Bell, Activity, Palette, Radio, Server, Network, Cpu } from "lucide-react";
 
 // ─── Setting field component ─────────────────────────────────────
 
@@ -322,6 +322,38 @@ export const SettingsPanel: React.FC = () => {
               max={30000}
               step={500}
               suffix="ms"
+            />
+          </Section>
+
+          {/* Modbus */}
+          <Section icon={<Cpu size={14} />} title="Modbus">
+            <NumberField
+              label="Poll Interval"
+              description="How often the frontend polls Modbus monitors for updated register values"
+              value={settings.modbusPollInterval}
+              onChange={set("modbusPollInterval")}
+              min={200}
+              max={30000}
+              step={100}
+              suffix="ms"
+            />
+            <NumberField
+              label="Request Timeout"
+              description="Maximum time to wait for a Modbus TCP response before timing out"
+              value={settings.modbusRequestTimeout}
+              onChange={set("modbusRequestTimeout")}
+              min={500}
+              max={30000}
+              step={500}
+              suffix="ms"
+            />
+            <NumberField
+              label="Default Unit ID"
+              description="Default Modbus slave/unit address for new connections (0-247)"
+              value={settings.modbusDefaultUnitId}
+              onChange={set("modbusDefaultUnitId")}
+              min={0}
+              max={247}
             />
           </Section>
 

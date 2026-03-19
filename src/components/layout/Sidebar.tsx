@@ -3,6 +3,7 @@ import { clsx } from "clsx";
 import { useAppStore } from "@/stores/appStore";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useMqttConnectionStore } from "@/stores/mqttConnectionStore";
+import { useModbusConnectionStore } from "@/stores/modbusConnectionStore";
 import { Tooltip } from "@/components/ui";
 import type { ViewMode } from "@/types/opcua";
 import {
@@ -16,6 +17,7 @@ import {
   ChevronRight,
   Radio,
   Cpu,
+  Database,
   LayoutDashboard,
   AlertTriangle,
   ScrollText,
@@ -52,31 +54,50 @@ const mqttNavItems: NavItem[] = [
   { id: "settings", label: "Settings", icon: <Settings size={18} /> },
 ];
 
+const modbusNavItems: NavItem[] = [
+  { id: "modbus_connection", label: "Connect", icon: <Zap size={18} /> },
+  { id: "modbus_registers", label: "Registers", icon: <Database size={18} />, requiresConnection: true },
+  { id: "modbus_monitor", label: "Monitor", icon: <Activity size={18} />, requiresConnection: true },
+  { id: "modbus_dashboard", label: "Dashboard", icon: <LayoutDashboard size={18} />, requiresConnection: true },
+  { id: "modbus_export", label: "Export", icon: <Download size={18} />, requiresConnection: true },
+  { id: "logs", label: "Logs", icon: <ScrollText size={18} /> },
+  { id: "settings", label: "Settings", icon: <Settings size={18} /> },
+];
+
 const protocolItems = [
   { id: "opcua" as const, label: "OPC UA", icon: <Network size={16} />, active: true },
   { id: "mqtt" as const, label: "MQTT", icon: <Radio size={16} />, active: true },
-  { id: "modbus" as const, label: "Modbus", icon: <Cpu size={16} />, active: false },
+  { id: "modbus" as const, label: "Modbus", icon: <Cpu size={16} />, active: true },
 ];
 
 export const Sidebar: React.FC = () => {
   const { activeView, setActiveView, sidebarCollapsed, toggleSidebar, activeProtocol, setActiveProtocol } = useAppStore();
   const { activeConnectionId: opcuaConnectionId } = useConnectionStore();
   const { activeConnectionId: mqttConnectionId, connections: mqttConnections } = useMqttConnectionStore();
+  const { activeConnectionId: modbusConnectionId } = useModbusConnectionStore();
 
   const activeConnection = mqttConnections.find((c) => c.id === mqttConnectionId);
   const isBrokerMode = activeConnection?.mode === "broker";
 
   // Filter broker admin unless connected in broker/simulator mode
-  const navItems = activeProtocol === "mqtt"
+  const navItems = activeProtocol === "modbus"
+    ? modbusNavItems
+    : activeProtocol === "mqtt"
     ? mqttNavItems.filter((item) => item.id !== "mqtt_broker_admin" || isBrokerMode)
     : opcuaNavItems;
-  const hasConnection = activeProtocol === "mqtt" ? !!mqttConnectionId : !!opcuaConnectionId;
+  const hasConnection = activeProtocol === "modbus"
+    ? !!modbusConnectionId
+    : activeProtocol === "mqtt"
+    ? !!mqttConnectionId
+    : !!opcuaConnectionId;
 
   const handleProtocolSwitch = (protocolId: "opcua" | "mqtt" | "modbus") => {
     setActiveProtocol(protocolId);
     // Navigate to the connection view of the new protocol
     if (protocolId === "mqtt") {
       setActiveView("mqtt_connection");
+    } else if (protocolId === "modbus") {
+      setActiveView("modbus_connection");
     } else if (protocolId === "opcua") {
       setActiveView("connection");
     }

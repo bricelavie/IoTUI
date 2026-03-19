@@ -2,6 +2,7 @@ import React, { useEffect } from "react";
 import { useMqttBrokerStore } from "@/stores/mqttBrokerStore";
 import { useMqttConnectionStore } from "@/stores/mqttConnectionStore";
 import { Card, Badge, EmptyState, Tooltip } from "@/components/ui";
+import { formatBytes, formatUptime } from "@/utils/mqtt";
 import {
   Server,
   Users,
@@ -10,21 +11,6 @@ import {
   Clock,
   Database,
 } from "lucide-react";
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatUptime(secs: number): string {
-  const h = Math.floor(secs / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  const s = Math.floor(secs % 60);
-  if (h > 0) return `${h}h ${m}m ${s}s`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-}
 
 export const BrokerAdminPanel: React.FC = () => {
   const { activeConnectionId } = useMqttConnectionStore();
@@ -94,7 +80,12 @@ export const BrokerAdminPanel: React.FC = () => {
           </h3>
 
           {clients.length === 0 ? (
-            <p className="text-xs text-iot-text-muted text-center py-6">No clients connected</p>
+            <div className="text-center py-6 space-y-1">
+              <p className="text-xs text-iot-text-muted">No individual client details available</p>
+              <p className="text-2xs text-iot-text-disabled">
+                The embedded broker does not expose per-client information. Connection counts are shown in the stats above.
+              </p>
+            </div>
           ) : (
             <div className="overflow-auto">
               <table className="w-full text-xs">

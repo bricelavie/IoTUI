@@ -46,6 +46,14 @@ export interface AppSettings {
   mqttMaxStreamMessages: number;
   /** MQTT broker stats poll interval (ms) */
   mqttBrokerStatsPollInterval: number;
+
+  // ─── Modbus ──────────────────────────────────────────────────
+  /** Modbus monitor poll interval (ms) */
+  modbusPollInterval: number;
+  /** Per-request timeout for Modbus operations (ms) */
+  modbusRequestTimeout: number;
+  /** Default Modbus slave/unit ID */
+  modbusDefaultUnitId: number;
 }
 
 interface SettingsStore extends AppSettings {
@@ -76,6 +84,10 @@ const DEFAULTS: AppSettings = {
   mqttMaxMessagesPerTopic: 100,
   mqttMaxStreamMessages: 1000,
   mqttBrokerStatsPollInterval: 3000,
+
+  modbusPollInterval: 1000,
+  modbusRequestTimeout: 3000,
+  modbusDefaultUnitId: 1,
 };
 
 const SETTINGS_KEYS = Object.keys(DEFAULTS) as (keyof AppSettings)[];

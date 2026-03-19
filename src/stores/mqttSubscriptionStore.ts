@@ -6,7 +6,7 @@ import type {
   MqttPollResponse,
   MqttQoS,
 } from "@/types/mqtt";
-import { errorMessage } from "@/types/opcua";
+import { errorMessage } from "@/utils/errors";
 import * as mqtt from "@/services/mqtt";
 import { toast } from "@/stores/notificationStore";
 import { getSetting } from "@/stores/settingsStore";

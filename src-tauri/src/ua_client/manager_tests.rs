@@ -13,6 +13,9 @@ mod tests {
             username: None,
             password: None,
             session_timeout: Some(60_000),
+            trust_server_certs: false,
+            certificate_path: None,
+            private_key_path: None,
             use_simulator: true,
         }
     }

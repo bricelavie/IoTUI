@@ -46,7 +46,7 @@ export const Sparkline: React.FC<SparklineProps> = memo(({
   const fillD = `${pathD} L${padding + innerWidth},${padding + innerHeight} L${padding},${padding + innerHeight} Z`;
 
   return (
-    <svg width={width} height={height} className="flex-shrink-0">
+    <svg width={width} height={height} className="flex-shrink-0" role="img" aria-label="Sparkline trend chart">
       <defs>
         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={resolvedColor} stopOpacity="0.3" />

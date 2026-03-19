@@ -4,7 +4,7 @@ import { useMqttSubscriptionStore } from "@/stores/mqttSubscriptionStore";
 import { useMqttTopicStore } from "@/stores/mqttTopicStore";
 import { useMqttBrokerStore } from "@/stores/mqttBrokerStore";
 import { useAppStore } from "@/stores/appStore";
-import { errorMessage } from "@/types/opcua";
+import { errorMessage } from "@/utils/errors";
 import type { MqttMode, MqttProtocolVersion, MqttAuthType, MqttQoS } from "@/types/mqtt";
 import {
   Button, Input, Select, Card, Badge, StatusDot, EmptyState, Checkbox, Tooltip,

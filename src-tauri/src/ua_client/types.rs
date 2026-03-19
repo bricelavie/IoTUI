@@ -17,6 +17,14 @@ pub struct ConnectionConfig {
     /// When true, use the built-in simulator instead of connecting to an external OPC UA server.
     #[serde(default)]
     pub use_simulator: bool,
+    /// When true, accept any server certificate (including self-signed).
+    /// Analogous to MQTT's `accept_invalid_certs`.
+    #[serde(default)]
+    pub trust_server_certs: bool,
+    /// Path to client certificate (.pem / .der) for certificate authentication.
+    pub certificate_path: Option<String>,
+    /// Path to client private key (.pem) for certificate authentication.
+    pub private_key_path: Option<String>,
 }
 
 impl fmt::Debug for ConnectionConfig {
@@ -31,6 +39,9 @@ impl fmt::Debug for ConnectionConfig {
             .field("password", &"<redacted>")
             .field("session_timeout", &self.session_timeout)
             .field("use_simulator", &self.use_simulator)
+            .field("trust_server_certs", &self.trust_server_certs)
+            .field("certificate_path", &self.certificate_path)
+            .field("private_key_path", &self.private_key_path)
             .finish()
     }
 }

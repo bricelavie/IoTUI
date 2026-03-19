@@ -325,7 +325,7 @@ export const MonitoredItemsTable: React.FC = () => {
                             name: item.display_name,
                           });
                         }}
-                        className="text-iot-text-disabled hover:text-iot-red transition-colors p-1"
+                        className="text-iot-text-disabled hover:text-iot-red transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iot-border-focus"
                         title="Remove"
                       >
                         <Trash2 size={11} />

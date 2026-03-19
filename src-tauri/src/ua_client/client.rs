@@ -115,14 +115,10 @@ impl OpcUaConnection {
 
     fn build_data_change_callback(
         data_buffers: Arc<SyncMutex<HashMap<u32, VecDeque<DataChangeEvent>>>>,
-        subscription_bindings: Arc<SyncMutex<HashMap<u32, SubscriptionBinding>>>,
+        _subscription_bindings: Arc<SyncMutex<HashMap<u32, SubscriptionBinding>>>,
         logical_subscription_id: u32,
     ) -> DataChangeCallback {
         DataChangeCallback::new(move |dv, item| {
-            let effective_subscription_id = Self::resolve_server_subscription_id(
-                &subscription_bindings,
-                logical_subscription_id,
-            );
             let node_id_str = item.item_to_monitor().node_id.to_string();
             let display_name = node_id_str.clone();
             let value_str = dv
@@ -142,7 +138,7 @@ impl OpcUaConnection {
                 .unwrap_or_else(|| "Good".to_string());
 
             let event = DataChangeEvent {
-                subscription_id: effective_subscription_id,
+                subscription_id: logical_subscription_id,
                 monitored_item_id: item.client_handle(),
                 node_id: node_id_str,
                 display_name,
@@ -279,7 +275,7 @@ impl OpcUaConnection {
             .application_name("IoTUI")
             .application_uri("urn:iotui:client")
             .product_uri("urn:iotui")
-            .trust_server_certs(false)
+            .trust_server_certs(config.trust_server_certs)
             .create_sample_keypair(true)
             .session_retry_limit(3)
             .recreate_subscriptions(true)
@@ -301,10 +297,29 @@ impl OpcUaConnection {
                 IdentityToken::new_user_name(user, pass)
             }
             AuthType::Certificate => {
-                // Certificate auth not yet supported in this integration
-                return Err(AppError::security(
-                    "Certificate authentication is not yet supported for live connections. Use Anonymous or Username/Password.",
-                ));
+                let cert_path = config.certificate_path.as_deref().unwrap_or_default();
+                let key_path = config.private_key_path.as_deref().unwrap_or_default();
+                if cert_path.is_empty() || key_path.is_empty() {
+                    return Err(AppError::invalid_argument(
+                        "Certificate authentication requires both a certificate path and a private key path.",
+                    ));
+                }
+                let cert_path_ref = std::path::Path::new(cert_path);
+                let key_path_ref = std::path::Path::new(key_path);
+                if !cert_path_ref.exists() {
+                    return Err(AppError::invalid_argument(format!(
+                        "Certificate file not found: {}",
+                        cert_path
+                    )));
+                }
+                if !key_path_ref.exists() {
+                    return Err(AppError::invalid_argument(format!(
+                        "Private key file not found: {}",
+                        key_path
+                    )));
+                }
+                IdentityToken::new_x509_path(cert_path_ref, key_path_ref)
+                    .map_err(|e| AppError::security(format!("Failed to load certificate/key: {e}")))?
             }
         };
 
@@ -477,7 +492,12 @@ impl OpcUaConnection {
             .collect())
     }
 
-    /// Browse child nodes of a given node
+    /// Browse child nodes of a given node.
+    ///
+    /// When the server returns a continuation point (indicating more results
+    /// are available), this method automatically calls `browse_next` in a
+    /// loop until all references have been collected, then releases any
+    /// outstanding continuation point.
     pub async fn browse(&self, node_id_str: &str) -> AppResult<Vec<BrowseNode>> {
         let node_id =
             NodeId::from_str(node_id_str).map_err(|e| AppError::invalid_argument(format!("Invalid node ID: {e}")))?;
@@ -503,7 +523,49 @@ impl OpcUaConnection {
 
         let result = &results[0];
 
-        let references = result
+        let mut all_references: Vec<BrowseNode> = Self::collect_browse_references(result);
+
+        // Follow continuation points to retrieve all results
+        let mut continuation_point = result.continuation_point.clone();
+        const MAX_BROWSE_NEXT_LOOPS: usize = 100; // safety limit
+        let mut loop_count = 0;
+
+        while !continuation_point.is_null() && loop_count < MAX_BROWSE_NEXT_LOOPS {
+            loop_count += 1;
+            debug!(
+                "BrowseNext: following continuation point (iteration {})",
+                loop_count
+            );
+
+            let next_results = self
+                .session
+                .browse_next(false, &[continuation_point.clone()])
+                .await
+                .map_err(|e| AppError::opcua(format!("BrowseNext failed: {e}")))?;
+
+            if next_results.is_empty() {
+                break;
+            }
+
+            let next_result = &next_results[0];
+            all_references.extend(Self::collect_browse_references(next_result));
+            continuation_point = next_result.continuation_point.clone();
+        }
+
+        // Release any outstanding continuation point
+        if !continuation_point.is_null() {
+            let _ = self
+                .session
+                .browse_next(true, &[continuation_point])
+                .await;
+        }
+
+        Ok(all_references)
+    }
+
+    /// Extract `BrowseNode`s from a single `BrowseResult`.
+    fn collect_browse_references(result: &opcua::types::BrowseResult) -> Vec<BrowseNode> {
+        result
             .references
             .as_ref()
             .map(|refs| {
@@ -532,9 +594,7 @@ impl OpcUaConnection {
                     })
                     .collect()
             })
-            .unwrap_or_default();
-
-        Ok(references)
+            .unwrap_or_default()
     }
 
     /// Read detailed attributes of a node

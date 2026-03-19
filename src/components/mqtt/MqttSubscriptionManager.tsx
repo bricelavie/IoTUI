@@ -4,7 +4,7 @@ import { useMqttConnectionStore } from "@/stores/mqttConnectionStore";
 import { Button, Input, Select, Badge, EmptyState, Tooltip } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ui/Modal";
 import { toast } from "@/stores/notificationStore";
-import { errorMessage } from "@/types/opcua";
+import { errorMessage } from "@/utils/errors";
 import { calculateMessageRate } from "@/utils/mqtt";
 import type { MqttQoS } from "@/types/mqtt";
 import {

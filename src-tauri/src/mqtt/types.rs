@@ -190,10 +190,15 @@ pub fn detect_payload_format(payload: &str) -> PayloadFormat {
             return PayloadFormat::Json;
         }
     }
-    // Check if hex string
+    // Check if hex string — must have even length, >= 4 chars, all hex digits,
+    // and at least one non-decimal hex character (a-f/A-F) to avoid false
+    // positives on payloads like "1234" or "9999".
     if trimmed.len() % 2 == 0
         && trimmed.len() >= 4
         && trimmed.chars().all(|c| c.is_ascii_hexdigit())
+        && trimmed
+            .chars()
+            .any(|c| c.is_ascii_hexdigit() && !c.is_ascii_digit())
     {
         return PayloadFormat::Hex;
     }
@@ -250,4 +255,69 @@ pub struct BrokerStats {
 pub struct MqttPollResponse {
     pub messages: Vec<MqttMessage>,
     pub topics_updated: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_empty_as_text() {
+        assert_eq!(detect_payload_format(""), PayloadFormat::Text);
+        assert_eq!(detect_payload_format("   "), PayloadFormat::Text);
+    }
+
+    #[test]
+    fn detect_json_object() {
+        assert_eq!(
+            detect_payload_format(r#"{"temp": 22.5}"#),
+            PayloadFormat::Json
+        );
+    }
+
+    #[test]
+    fn detect_json_array() {
+        assert_eq!(detect_payload_format("[1, 2, 3]"), PayloadFormat::Json);
+    }
+
+    #[test]
+    fn detect_invalid_json_as_text() {
+        assert_eq!(detect_payload_format("{not json}"), PayloadFormat::Text);
+    }
+
+    #[test]
+    fn detect_hex_with_alpha() {
+        // Contains 'a', 'b' — clearly hex
+        assert_eq!(detect_payload_format("deadbeef"), PayloadFormat::Hex);
+        assert_eq!(detect_payload_format("0a1b2c3d"), PayloadFormat::Hex);
+    }
+
+    #[test]
+    fn detect_pure_digits_not_hex() {
+        // "1234" and "9999" are all-digit — should NOT be classified as hex
+        assert_eq!(detect_payload_format("1234"), PayloadFormat::Text);
+        assert_eq!(detect_payload_format("9999"), PayloadFormat::Text);
+        assert_eq!(detect_payload_format("00112233"), PayloadFormat::Text);
+    }
+
+    #[test]
+    fn detect_odd_length_hex_as_text() {
+        // Odd length — not valid hex encoding
+        assert_eq!(detect_payload_format("abc"), PayloadFormat::Text);
+    }
+
+    #[test]
+    fn detect_short_hex_as_text() {
+        // Less than 4 chars — too short to classify as hex
+        assert_eq!(detect_payload_format("ab"), PayloadFormat::Text);
+    }
+
+    #[test]
+    fn detect_plain_text() {
+        assert_eq!(detect_payload_format("hello world"), PayloadFormat::Text);
+        assert_eq!(
+            detect_payload_format("temperature: 22.5"),
+            PayloadFormat::Text
+        );
+    }
 }

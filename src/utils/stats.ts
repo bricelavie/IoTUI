@@ -25,3 +25,11 @@ export function computeStats(history: HistoryPoint[]): Stats {
   }
   return { min, max, avg: sum / valid.length, count: valid.length };
 }
+
+/** Format a number smartly: 0 decimals for integers, 2 for small values, 1 for large. */
+export function smartFormat(value: number): string {
+  if (Number.isInteger(value)) return value.toString();
+  const abs = Math.abs(value);
+  if (abs >= 1000) return value.toFixed(1);
+  return value.toFixed(2);
+}

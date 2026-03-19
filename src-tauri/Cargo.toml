@@ -28,6 +28,9 @@ futures-util = "0.3"
 # OPC UA client support
 async-opcua = { version = "0.18", features = ["client"] }
 
+# Modbus TCP client support
+tokio-modbus = { version = "0.17", default-features = false, features = ["tcp"] }
+
 # MQTT client support
 rumqttc = { version = "0.24", features = ["use-rustls"] }
 # Embedded MQTT broker

@@ -20,6 +20,12 @@ import { MqttConnectionPanel } from "@/components/mqtt/MqttConnectionPanel";
 import { MqttExplorer } from "@/components/mqtt/MqttExplorer";
 import { MqttDashboard } from "@/components/mqtt/MqttDashboard";
 import { BrokerAdminPanel } from "@/components/mqtt/BrokerAdminPanel";
+// Modbus components
+import { ModbusConnectionPanel } from "@/components/modbus/ModbusConnectionPanel";
+import { RegisterBrowser } from "@/components/modbus/RegisterBrowser";
+import { RegisterMonitor } from "@/components/modbus/RegisterMonitor";
+import { ModbusDashboard } from "@/components/modbus/ModbusDashboard";
+import { ModbusDataExport } from "@/components/modbus/ModbusDataExport";
 
 import { useAppStore } from "@/stores/appStore";
 import { useThemeStore } from "@/stores/themeStore";
@@ -29,6 +35,8 @@ import { useMqttConnectionStore } from "@/stores/mqttConnectionStore";
 import { useMqttSubscriptionStore } from "@/stores/mqttSubscriptionStore";
 import { useMqttTopicStore } from "@/stores/mqttTopicStore";
 import { useMqttBrokerStore } from "@/stores/mqttBrokerStore";
+import { useModbusConnectionStore } from "@/stores/modbusConnectionStore";
+import { useModbusMonitorStore } from "@/stores/modbusMonitorStore";
 import { startBackendLogPolling, stopBackendLogPolling } from "@/services/logger";
 import type { ViewMode } from "@/types/opcua";
 
@@ -153,6 +161,54 @@ function MqttContent({ view }: { view: ViewMode }) {
   }
 }
 
+// ─── Modbus Content Routing ──────────────────────────────────────
+
+function ModbusContent({ view }: { view: ViewMode }) {
+  const { activeConnectionId } = useModbusConnectionStore();
+
+  if (view === "modbus_connection") {
+    return <ModbusConnectionPanel />;
+  }
+
+  // Shared views (logs, settings) are protocol-agnostic
+  if (view === "logs") {
+    return <LogPanel />;
+  }
+  if (view === "settings") {
+    return <SettingsPanel />;
+  }
+
+  // All other Modbus views require an active connection
+  if (!activeConnectionId) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="text-center">
+          <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-iot-bg-elevated border border-iot-border flex items-center justify-center">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-iot-text-disabled">
+              <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+            </svg>
+          </div>
+          <p className="text-sm text-iot-text-secondary font-medium">No Active Connection</p>
+          <p className="text-xs text-iot-text-muted mt-1">Connect to a Modbus device to get started</p>
+        </div>
+      </div>
+    );
+  }
+
+  switch (view) {
+    case "modbus_registers":
+      return <RegisterBrowser />;
+    case "modbus_monitor":
+      return <RegisterMonitor />;
+    case "modbus_dashboard":
+      return <ModbusDashboard />;
+    case "modbus_export":
+      return <ModbusDataExport />;
+    default:
+      return <ModbusConnectionPanel />;
+  }
+}
+
 // ─── OPC UA Content Routing ──────────────────────────────────────
 
 function OpcUaContent({ view }: { view: ViewMode }) {
@@ -233,6 +289,10 @@ function MainContent() {
     return <MqttContent view={activeView} />;
   }
 
+  if (activeProtocol === "modbus") {
+    return <ModbusContent view={activeView} />;
+  }
+
   return <OpcUaContent view={activeView} />;
 }
 
@@ -270,6 +330,14 @@ export default function App() {
   const mqttClearTopics = useMqttTopicStore((s) => s.clearAll);
   const mqttBrokerClearAll = useMqttBrokerStore((s) => s.clearAll);
   const mqttSubClearAll = useMqttSubscriptionStore((s) => s.clearAll);
+
+  // Modbus stores
+  const modbusActiveConnectionId = useModbusConnectionStore((s) => s.activeConnectionId);
+  const modbusDisconnect = useModbusConnectionStore((s) => s.disconnect);
+  const modbusRefreshConnections = useModbusConnectionStore((s) => s.refreshConnections);
+  const modbusRefreshStatus = useModbusConnectionStore((s) => s.refreshStatusForActiveConnection);
+  const modbusStopPolling = useModbusMonitorStore((s) => s.stopPolling);
+  const modbusClearMonitors = useModbusMonitorStore((s) => s.clearAll);
 
   // ─── Backend log polling (always on) ───────────────────────────
   useEffect(() => {
@@ -392,6 +460,50 @@ export default function App() {
     }
   }, [activeProtocol, mqttSubClearAll, mqttClearTopics, mqttBrokerClearAll]);
 
+  // ─── Modbus lifecycle effects ──────────────────────────────────
+
+  // Refresh Modbus connections on mount / when protocol is modbus
+  useEffect(() => {
+    if (activeProtocol !== "modbus") return;
+    void modbusRefreshConnections();
+  }, [activeProtocol, modbusRefreshConnections]);
+
+  // Poll Modbus connection status every 3s (like OPC UA / MQTT)
+  useEffect(() => {
+    if (activeProtocol !== "modbus") return;
+    if (!modbusActiveConnectionId) return;
+    void modbusRefreshStatus();
+    const interval = setInterval(() => {
+      void modbusRefreshStatus();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [activeProtocol, modbusActiveConnectionId, modbusRefreshStatus]);
+
+  // Redirect to modbus_connection view when Modbus connection is lost
+  useEffect(() => {
+    if (activeProtocol !== "modbus") return;
+    const modbusViews: ViewMode[] = ["modbus_registers", "modbus_monitor", "modbus_dashboard", "modbus_export"];
+    if (!modbusActiveConnectionId && modbusViews.includes(activeView as ViewMode)) {
+      setActiveView("modbus_connection");
+    }
+  }, [activeProtocol, modbusActiveConnectionId, activeView, setActiveView]);
+
+  // Stop Modbus monitor polling when connection drops
+  useEffect(() => {
+    if (activeProtocol !== "modbus") return;
+    if (!modbusActiveConnectionId) {
+      modbusStopPolling();
+    }
+  }, [activeProtocol, modbusActiveConnectionId, modbusStopPolling]);
+
+  // Clean up Modbus stores when switching away from Modbus protocol
+  useEffect(() => {
+    if (activeProtocol !== "modbus") {
+      modbusStopPolling();
+      modbusClearMonitors();
+    }
+  }, [activeProtocol, modbusStopPolling, modbusClearMonitors]);
+
   // ─── Global keyboard shortcuts ────────────────────────────────
 
   useEffect(() => {
@@ -416,10 +528,24 @@ export default function App() {
       "6": "settings",
     };
 
+    const modbusShortcuts: Record<string, ViewMode> = {
+      "1": "modbus_connection",
+      "2": "modbus_registers",
+      "3": "modbus_monitor",
+      "4": "modbus_dashboard",
+      "5": "modbus_export",
+      "6": "logs",
+      "7": "settings",
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
 
-      const shortcuts = activeProtocol === "mqtt" ? mqttShortcuts : opcuaShortcuts;
+      const shortcuts = activeProtocol === "modbus"
+        ? modbusShortcuts
+        : activeProtocol === "mqtt"
+        ? mqttShortcuts
+        : opcuaShortcuts;
 
       // Ctrl/Cmd+1-9 for view navigation
       if (mod && shortcuts[e.key]) {
@@ -431,7 +557,9 @@ export default function App() {
       // Ctrl/Cmd+D to disconnect
       if (mod && e.key === "d") {
         e.preventDefault();
-        if (activeProtocol === "mqtt" && mqttActiveConnectionId) {
+        if (activeProtocol === "modbus" && modbusActiveConnectionId) {
+          modbusDisconnect(modbusActiveConnectionId);
+        } else if (activeProtocol === "mqtt" && mqttActiveConnectionId) {
           mqttDisconnect(mqttActiveConnectionId);
         } else if (activeProtocol === "opcua" && opcuaActiveConnectionId) {
           opcuaDisconnect(opcuaActiveConnectionId);
@@ -442,7 +570,7 @@ export default function App() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [setActiveView, activeProtocol, opcuaDisconnect, opcuaActiveConnectionId, mqttDisconnect, mqttActiveConnectionId]);
+  }, [setActiveView, activeProtocol, opcuaDisconnect, opcuaActiveConnectionId, mqttDisconnect, mqttActiveConnectionId, modbusDisconnect, modbusActiveConnectionId]);
 
   return (
     <AppShell>

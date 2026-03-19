@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { useMqttConnectionStore } from "@/stores/mqttConnectionStore";
 import { Button, Input, Select, Card, Badge } from "@/components/ui";
 import { toast } from "@/stores/notificationStore";
-import { errorMessage } from "@/types/opcua";
+import { errorMessage } from "@/utils/errors";
 import type { MqttQoS, MqttPublishTemplate } from "@/types/mqtt";
 import * as mqtt from "@/services/mqtt";
 import { log } from "@/services/logger";

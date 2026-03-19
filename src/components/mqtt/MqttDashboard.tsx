@@ -1,9 +1,10 @@
-import React, { useMemo, useRef, useState, useEffect } from "react";
+import React, { useMemo } from "react";
 import { useMqttSubscriptionStore } from "@/stores/mqttSubscriptionStore";
 import { useAppStore } from "@/stores/appStore";
 import { Card, Badge, Button, EmptyState } from "@/components/ui";
 import { LayoutDashboard, Activity } from "lucide-react";
-import { getThemeColors } from "@/utils/theme";
+import { DashboardSparkline } from "@/components/charts/DashboardSparkline";
+import { smartFormat } from "@/utils/stats";
 
 interface NumericTopicData {
   topic: string;
@@ -14,64 +15,6 @@ interface NumericTopicData {
   avg: number;
   lastTimestamp: number;
 }
-
-/** Format a number smartly: 0 decimals for integers, 2 for small values, 1 for large. */
-function smartFormat(value: number): string {
-  if (Number.isInteger(value)) return value.toString();
-  const abs = Math.abs(value);
-  if (abs >= 1000) return value.toFixed(1);
-  return value.toFixed(2);
-}
-
-/** Simple inline sparkline rendered with SVG polyline. Uses ResizeObserver for responsive width. */
-const Sparkline: React.FC<{ data: number[]; height?: number; color?: string }> = ({
-  data,
-  height = 80,
-  color,
-}) => {
-  const themeColors = getThemeColors();
-  const resolvedColor = color ?? themeColors.cyan;
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(200);
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const w = entry.contentRect.width;
-        if (w > 0) setWidth(w);
-      }
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  if (data.length < 2) return null;
-  const min = Math.min(...data);
-  const max = Math.max(...data);
-  const range = max - min || 1;
-  const step = width / (data.length - 1);
-
-  const points = data
-    .map((v, i) => `${i * step},${height - ((v - min) / range) * (height - 4) - 2}`)
-    .join(" ");
-
-  return (
-    <div ref={containerRef} className="w-full">
-      <svg width={width} height={height} className="block">
-        <polyline
-          points={points}
-          fill="none"
-          stroke={resolvedColor}
-          strokeWidth="1.5"
-          strokeLinejoin="round"
-          strokeLinecap="round"
-        />
-      </svg>
-    </div>
-  );
-};
 
 export const MqttDashboard: React.FC = () => {
   const { messages } = useMqttSubscriptionStore();
@@ -178,7 +121,7 @@ export const MqttDashboard: React.FC = () => {
               </div>
 
               <div className="px-1 pb-2 flex-1 min-w-0">
-                <Sparkline data={data.values.map((v) => v.value)} height={80} />
+                <DashboardSparkline data={data.values.map((v) => v.value)} height={80} />
               </div>
 
               <div className="flex items-center gap-3 px-3 py-1.5 text-2xs border-t border-iot-border/30">

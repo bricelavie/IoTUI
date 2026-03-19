@@ -10,6 +10,12 @@ export interface ConnectionConfig {
   password?: string;
   session_timeout?: number;
   use_simulator?: boolean;
+  /** When true, accept any server certificate (including self-signed). */
+  trust_server_certs?: boolean;
+  /** Path to client certificate (.pem / .der) for certificate auth. */
+  certificate_path?: string;
+  /** Path to client private key (.pem) for certificate auth. */
+  private_key_path?: string;
 }
 
 export type ConnectionStatus =
@@ -238,7 +244,13 @@ export type ViewMode =
   | "mqtt_connection"
   | "mqtt_explorer"
   | "mqtt_dashboard"
-  | "mqtt_broker_admin";
+  | "mqtt_broker_admin"
+  // Modbus views
+  | "modbus_connection"
+  | "modbus_registers"
+  | "modbus_monitor"
+  | "modbus_dashboard"
+  | "modbus_export";
 
 export interface TreeNodeState {
   node: BrowseNode;
@@ -297,62 +309,8 @@ export interface BackendLogEntry {
 }
 
 // ─── Error Types ─────────────────────────────────────────────────
+// Re-exported from shared module for backward compatibility.
+// New code should import directly from "@/utils/errors".
 
-export type AppErrorKind =
-  | "OpcUa"
-  | "Mqtt"
-  | "Connection"
-  | "NotFound"
-  | "InvalidArgument"
-  | "Security";
-
-export interface AppError {
-  kind: AppErrorKind;
-  message: string;
-}
-
-/**
- * Parse a Tauri invoke rejection into a structured `AppError`.
- *
- * With Tauri 2 native error serialization the backend returns `{ kind, message }`
- * objects directly.  Legacy string payloads (JSON-encoded or plain) are still
- * handled for backwards compatibility.
- */
-export function parseAppError(raw: unknown): AppError {
-  // Already a structured error object from Tauri 2 native serialization
-  if (raw != null && typeof raw === "object") {
-    const obj = raw as Record<string, unknown>;
-    if (typeof obj.kind === "string" && typeof obj.message === "string") {
-      return obj as unknown as AppError;
-    }
-  }
-  // Legacy: JSON-encoded string from old `Result<T, String>` commands
-  if (typeof raw === "string") {
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed.kind === "string" && typeof parsed.message === "string") {
-        return parsed as AppError;
-      }
-    } catch {
-      // not JSON — use raw string as message
-    }
-    return { kind: "OpcUa", message: raw };
-  }
-  return { kind: "OpcUa", message: String(raw ?? "Unknown error") };
-}
-
-/**
- * Extract a human-readable error message from any caught value.
- *
- * Use this everywhere instead of `String(e)` so that structured
- * `AppError` objects are displayed properly.
- */
-export function errorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (err != null && typeof err === "object") {
-    const obj = err as Record<string, unknown>;
-    if (typeof obj.message === "string") return obj.message;
-  }
-  if (typeof err === "string") return err;
-  return String(err ?? "Unknown error");
-}
+export type { AppErrorKind, AppError } from "@/utils/errors";
+export { parseAppError, errorMessage } from "@/utils/errors";

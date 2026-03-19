@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { BrokerStats, BrokerClientInfo } from "@/types/mqtt";
-import { errorMessage } from "@/types/opcua";
+import { errorMessage } from "@/utils/errors";
 import * as mqtt from "@/services/mqtt";
 import { getSetting } from "@/stores/settingsStore";
 import { log } from "@/services/logger";

@@ -7,7 +7,7 @@ import type {
   LogEntry,
   BackendLogEntry,
 } from "@/types/opcua";
-import { errorMessage } from "@/types/opcua";
+import { errorMessage } from "@/utils/errors";
 
 // ─── Sensitive data masking ──────────────────────────────────────
 
@@ -65,6 +65,8 @@ const POLL_COMMANDS = new Set([
   "mqtt_get_broker_stats",
   "mqtt_get_broker_clients",
   "mqtt_get_connection_status",
+  "modbus_poll_monitors",
+  "modbus_get_connection_status",
 ]);
 
 export function withLogging<TArgs extends unknown[], TResult>(

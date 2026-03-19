@@ -339,7 +339,7 @@ impl EmbeddedBroker {
             .collect()
     }
 
-    pub fn get_stats(&self) -> BrokerStats {
+    pub async fn get_stats(&self) -> BrokerStats {
         let uptime = (chrono::Utc::now() - self.start_time).num_seconds().max(0) as u64;
         BrokerStats {
             total_connections: self.total_connections.load(Ordering::Relaxed),
@@ -350,7 +350,7 @@ impl EmbeddedBroker {
             bytes_received: self.bytes_received.load(Ordering::Relaxed),
             bytes_sent: self.bytes_sent.load(Ordering::Relaxed),
             uptime_secs: uptime,
-            retained_messages: self.buffer.blocking_lock().retained_topics.len() as u32,
+            retained_messages: self.buffer.lock().await.retained_topics.len() as u32,
         }
     }
 

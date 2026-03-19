@@ -144,6 +144,22 @@ pub struct MqttClientConnection {
 
 impl MqttClientConnection {
     pub async fn connect(config: &MqttConnectionConfig) -> AppResult<Self> {
+        // Validate certificate auth requirements
+        if matches!(config.auth_type, MqttAuthType::Certificate) {
+            let tls = config.tls.as_ref().ok_or_else(|| {
+                AppError::invalid_argument(
+                    "Certificate authentication requires TLS to be enabled.",
+                )
+            })?;
+            if tls.client_cert_path.as_deref().unwrap_or_default().is_empty()
+                || tls.client_key_path.as_deref().unwrap_or_default().is_empty()
+            {
+                return Err(AppError::invalid_argument(
+                    "Certificate authentication requires both a client certificate path and a private key path in the TLS configuration.",
+                ));
+            }
+        }
+
         let client_id = config.client_id.clone().unwrap_or_else(|| {
             format!(
                 "iotui-{}",

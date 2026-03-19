@@ -21,6 +21,9 @@ pub enum AppError {
 
     #[error("MQTT error: {0}")]
     Mqtt(String),
+
+    #[error("Modbus error: {0}")]
+    Modbus(String),
 }
 
 impl AppError {
@@ -48,6 +51,10 @@ impl AppError {
         Self::Mqtt(message.into())
     }
 
+    pub fn modbus(message: impl Into<String>) -> Self {
+        Self::Modbus(message.into())
+    }
+
     fn kind(&self) -> &'static str {
         match self {
             Self::OpcUa(_) => "OpcUa",
@@ -56,6 +63,7 @@ impl AppError {
             Self::InvalidArgument(_) => "InvalidArgument",
             Self::Security(_) => "Security",
             Self::Mqtt(_) => "Mqtt",
+            Self::Modbus(_) => "Modbus",
         }
     }
 
@@ -66,7 +74,8 @@ impl AppError {
             | Self::NotFound(m)
             | Self::InvalidArgument(m)
             | Self::Security(m)
-            | Self::Mqtt(m) => m,
+            | Self::Mqtt(m)
+            | Self::Modbus(m) => m,
         }
     }
 }

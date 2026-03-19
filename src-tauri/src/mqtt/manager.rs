@@ -439,7 +439,7 @@ impl MqttManager {
         match &guard.backend {
             MqttBackend::Broker(broker) => {
                 let broker = broker.lock().await;
-                Ok(broker.get_stats())
+                Ok(broker.get_stats().await)
             }
             MqttBackend::Client(_) => Err(AppError::mqtt(
                 "Broker stats are only available in broker mode",
